@@ -1,0 +1,95 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "preload-rs",
+  "projectDescription": "Adaptive system daemon that prefetches binaries and libraries to optimize application startup times on Linux HDD systems",
+  "theme": "aspen",
+  "primaryColor": "#CE412B",
+  "lightColor": "#F74C00",
+  "darkColor": "#A72511",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "usage/cli-reference",
+              "usage/configuration",
+              "usage/signals"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/understanding-preload",
+              "guides/tuning-performance",
+              "guides/troubleshooting"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Architecture",
+        "groups": [
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "architecture/overview",
+              "architecture/markov-model",
+              "architecture/persistence"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "api/traits",
+              "api/crates"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Markov-based predictive prefetching",
+    "Adaptive memory budget management",
+    "Process monitoring and analysis",
+    "SQLite-based state persistence",
+    "Signal-based runtime control",
+    "TOML configuration with merging",
+    "Concurrent prefetch workers",
+    "Multiple sort strategies (path, block, inode)"
+  ],
+  "publicApiSurface": [
+    "preload-rs (daemon command)",
+    "preload-rs --config <FILE>",
+    "preload-rs --config-dir <DIR>",
+    "preload-rs --state <FILE>",
+    "preload-rs --once",
+    "preload-rs --no-persist",
+    "preload-rs --no-prefetch",
+    "preload-rs -v/-vv/-vvv (verbosity)",
+    "SIGHUP (reload config)",
+    "SIGUSR1 (dump state)",
+    "SIGUSR2 (save state)",
+    "Scanner trait",
+    "AdmissionPolicy trait",
+    "ModelUpdater trait",
+    "Predictor trait",
+    "PrefetchPlanner trait",
+    "Prefetcher trait",
+    "StateRepository trait",
+    "PreloadEngine",
+    "Config",
+    "Stores"
+  ]
+}

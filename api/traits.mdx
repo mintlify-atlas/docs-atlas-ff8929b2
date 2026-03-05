@@ -40,7 +40,7 @@ impl Scanner for StaticScanner {
 
 **Built-in Implementation:** [`ProcfsScanner`](/api/crates#procfsscanner) - Scans `/proc` filesystem on Linux
 
-Source: [observation/mod.rs:18-21](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs#L18-L21)
+Source: [observation/mod.rs:18-21](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs#L18-L21)
 
 ---
 
@@ -103,7 +103,7 @@ impl AdmissionPolicy for CustomPolicy {
 
 **Built-in Implementation:** [`DefaultAdmissionPolicy`](/api/crates#defaultadmissionpolicy) - Configurable prefix matching with LRU cache
 
-Source: [observation/admission.rs:32-43](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/admission.rs#L32-L43)
+Source: [observation/admission.rs:32-43](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/observation/admission.rs#L32-L43)
 
 ---
 
@@ -138,7 +138,7 @@ pub struct ModelDelta {
 
 **Built-in Implementation:** [`DefaultModelUpdater`](/api/crates#defaultmodelupdater) - Lazy Markov model with exponential decay
 
-Source: [observation/model_updater.rs:24-31](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/model_updater.rs#L24-L31)
+Source: [observation/model_updater.rs:24-31](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/observation/model_updater.rs#L24-L31)
 
 ---
 
@@ -174,7 +174,7 @@ for (exe_id, score) in prediction.exe_scores {
 
 **Built-in Implementation:** [`MarkovPredictor`](/api/crates#markovpredictor) - Continuous-time Markov chain predictor with optional correlation
 
-Source: [prediction/predictor.rs:9-12](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs#L9-L12)
+Source: [prediction/predictor.rs:9-12](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs#L9-L12)
 
 ---
 
@@ -205,7 +205,7 @@ pub struct PrefetchPlan {
 
 **Built-in Implementation:** [`GreedyPrefetchPlanner`](/api/crates#greedyprefetchplanner) - Greedy selection with configurable sort strategies (Path, Block, Inode)
 
-Source: [prefetch/planner.rs:15-18](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/planner.rs#L15-L18)
+Source: [prefetch/planner.rs:15-18](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/prefetch/planner.rs#L15-L18)
 
 ---
 
@@ -245,7 +245,7 @@ impl Prefetcher for NoopPrefetcher {
 - [`PosixFadvisePrefetcher`](/api/crates#posixfadviseprefetcher) - Uses `posix_fadvise(WILLNEED)` with concurrent I/O
 - [`NoopPrefetcher`](/api/crates#noopprefetcher) - No-op for testing and dry runs
 
-Source: [prefetch/prefetcher.rs:12-16](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/prefetcher.rs#L12-L16)
+Source: [prefetch/prefetcher.rs:12-16](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/prefetch/prefetcher.rs#L12-L16)
 
 ---
 
@@ -290,7 +290,7 @@ async fn main() {
 - [`SqliteRepository`](/api/crates#sqliterepository) - SQLite-backed persistence with WAL mode
 - [`NoopRepository`](/api/crates#nooprepository) - No-op for stateless operation
 
-Source: [persistence/repo.rs:15-21](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs#L15-L21)
+Source: [persistence/repo.rs:15-21](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs#L15-L21)
 
 ---
 
@@ -326,7 +326,7 @@ impl Clock for SystemClock {
 
 **Built-in Implementation:** [`SystemClock`](/api/crates#systemclock) - Uses system time and tokio sleep
 
-Source: [clock.rs:5-9](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/clock.rs#L5-L9)
+Source: [clock.rs:5-9](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/clock.rs#L5-L9)
 
 ---
 
@@ -367,4 +367,4 @@ async fn main() {
 }
 ```
 
-See the [Engine Pipeline test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs) for a complete working example.
+See the [Engine Pipeline test](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs) for a complete working example.

@@ -83,7 +83,7 @@ pub use stores::Stores;
   - `policy_stats: Option<AdmissionPolicyStats>` - Policy cache statistics
 </ResponseField>
 
-Source: [engine/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/engine/mod.rs)
+Source: [engine/mod.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/engine/mod.rs)
 
 #### observation
 
@@ -134,7 +134,7 @@ Source: [engine/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/
   **Trait:** Implements `ModelUpdater`
 </ResponseField>
 
-Source: [observation/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs)
+Source: [observation/mod.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs)
 
 #### prediction
 
@@ -164,7 +164,7 @@ Source: [observation/mod.rs](https://github.com/your-org/preload-rs/blob/main/cr
   - `map_scores: HashMap<MapId, f32>` - Score per memory map (0.0 to 1.0)
 </ResponseField>
 
-Source: [prediction/predictor.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs)
+Source: [prediction/predictor.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs)
 
 #### prefetch
 
@@ -217,7 +217,7 @@ Source: [prediction/predictor.rs](https://github.com/your-org/preload-rs/blob/ma
   **Trait:** Implements `Prefetcher`
 </ResponseField>
 
-Source: [prefetch/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/mod.rs)
+Source: [prefetch/mod.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/prefetch/mod.rs)
 
 #### persistence
 
@@ -251,7 +251,7 @@ Source: [prefetch/mod.rs](https://github.com/your-org/preload-rs/blob/main/crate
   **Trait:** Implements `StateRepository`
 </ResponseField>
 
-Source: [persistence/repo.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs)
+Source: [persistence/repo.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs)
 
 #### domain
 
@@ -315,7 +315,7 @@ Core domain types used throughout the crate.
   - `pageout: u64` - Pages written to disk
 </ResponseField>
 
-Source: [domain/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/domain/mod.rs)
+Source: [domain/mod.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/domain/mod.rs)
 
 #### stores
 
@@ -340,7 +340,7 @@ Source: [domain/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/
   - `ensure_markov_edge(a: ExeId, b: ExeId, time: u64, state: MarkovState) -> bool` - Create edge if missing
 </ResponseField>
 
-Source: [stores/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/stores/mod.rs)
+Source: [stores/mod.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/src/stores/mod.rs)
 
 ---
 
@@ -461,7 +461,7 @@ autosave_interval = 600    # Save every 10 minutes
 db_path = "/var/lib/preload-rs/state.db"
 ```
 
-Source: [config/src/lib.rs](https://github.com/your-org/preload-rs/blob/main/crates/config/src/lib.rs)
+Source: [config/src/lib.rs](https://github.com/arunanshub/preload-rs/blob/main/crates/config/src/lib.rs)
 
 ---
 
@@ -478,7 +478,7 @@ The cli crate provides the command-line interface. It has minimal public API sur
 
 The CLI binary is the primary consumer of the `orchestrator` and `config` crates, wiring them together with signal handling, logging, and daemon operation.
 
-See the [CLI source](https://github.com/your-org/preload-rs/blob/main/crates/cli/src/main.rs) for implementation details.
+See the [CLI source](https://github.com/arunanshub/preload-rs/blob/main/crates/cli/src/main.rs) for implementation details.
 
 ---
 
@@ -547,6 +547,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 For more examples, see:
-- [Engine Pipeline Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs)
-- [Predictor Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/predictor.rs)
-- [Prefetcher Integration Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/prefetcher_integration.rs)
+- [Engine Pipeline Test](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs)
+- [Predictor Test](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/tests/predictor.rs)
+- [Prefetcher Integration Test](https://github.com/arunanshub/preload-rs/blob/main/crates/orchestrator/tests/prefetcher_integration.rs)

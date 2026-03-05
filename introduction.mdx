@@ -107,7 +107,13 @@ description: Intelligent application prefetching for faster Linux system perform
       Start preload-rs with your configuration:
       
       ```bash
-      ./target/release/cli --config config.toml -v
+      cargo run -p cli -- --config config.toml -v
+      ```
+      
+      Or if you've installed it system-wide:
+      
+      ```bash
+      preload-rs --config config.toml -v
       ```
       
       <Info>

@@ -1,0 +1,552 @@
+---
+title: 'Crate Structure'
+description: 'Overview of preload-rs crates and their public APIs'
+---
+
+## Architecture
+
+preload-rs is organized into three crates with clear separation of concerns:
+
+- **`orchestrator`** - Core prediction engine and trait definitions
+- **`config`** - Configuration management with TOML support
+- **`cli`** - Command-line interface (internal, minimal public API)
+
+---
+
+## orchestrator
+
+The orchestrator crate contains the core preload engine, all trait definitions, and built-in implementations.
+
+### Public API
+
+```rust
+// Re-exported from lib.rs
+pub use engine::{ControlEvent, PreloadEngine, ReloadBundle, Services, TickReport};
+pub use observation::{
+    AdmissionDecision, AdmissionPolicy, AdmissionPolicyStats, CandidateExe, Completeness,
+    DefaultAdmissionPolicy, DefaultModelUpdater, ModelDelta, ModelUpdater, Observation,
+    ObservationEvent, ProcfsScanner, RejectReason, ScanWarning, Scanner,
+};
+pub use persistence::{NoopRepository, SqliteRepository, StateRepository, StoresSnapshot};
+pub use prediction::{MarkovPredictor, Prediction, PredictionSummary, Predictor};
+pub use prefetch::{
+    GreedyPrefetchPlanner, NoopPrefetcher, PosixFadvisePrefetcher, PrefetchPlan, PrefetchPlanner,
+    PrefetchReport, Prefetcher,
+};
+pub use clock::{Clock, SystemClock};
+pub use domain::{Exe, ExeId, ExeKey, MapId, MapKey, MapSegment, MarkovEdge, MarkovState, MemStat};
+pub use stores::Stores;
+```
+
+### Key Modules
+
+#### engine
+
+**PreloadEngine** - Main orchestration loop
+
+<ResponseField name="PreloadEngine" type="struct">
+  Central engine that coordinates all pipeline components.
+
+  **Methods:**
+  - `new(config: Config, services: Services) -> Result<Self, Error>` - Create new engine
+  - `load(config: Config, services: Services) -> Result<Self, Error>` - Load from persisted state
+  - `tick() -> Result<TickReport, Error>` - Execute one prediction/prefetch cycle
+  - `save() -> Result<(), Error>` - Persist current state
+  - `stores() -> &Stores` - Access internal stores (read-only)
+</ResponseField>
+
+<ResponseField name="Services" type="struct">
+  Dependency injection container for all pipeline components.
+
+  **Fields:**
+  - `scanner: Box<dyn Scanner>`
+  - `admission: Box<dyn AdmissionPolicy>`
+  - `updater: Box<dyn ModelUpdater>`
+  - `predictor: Box<dyn Predictor>`
+  - `planner: Box<dyn PrefetchPlanner>`
+  - `prefetcher: Box<dyn Prefetcher>`
+  - `repo: Box<dyn StateRepository>`
+  - `clock: Box<dyn Clock>`
+</ResponseField>
+
+<ResponseField name="TickReport" type="struct">
+  Results from a single engine cycle.
+
+  **Fields:**
+  - `scan_time_us: u64` - Microseconds spent scanning
+  - `update_time_us: u64` - Microseconds spent updating model
+  - `predict_time_us: u64` - Microseconds spent predicting
+  - `plan_time_us: u64` - Microseconds spent planning
+  - `prefetch_time_us: u64` - Microseconds spent prefetching
+  - `model_delta: ModelDelta` - Changes to the model
+  - `prefetch_report: PrefetchReport` - Prefetch execution results
+  - `policy_stats: Option<AdmissionPolicyStats>` - Policy cache statistics
+</ResponseField>
+
+Source: [engine/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/engine/mod.rs)
+
+#### observation
+
+**ProcfsScanner** - Linux `/proc` filesystem scanner
+
+<ResponseField name="ProcfsScanner" type="struct">
+  Scans running processes and their memory maps from `/proc`.
+
+  **Constructor:**
+  - `new() -> Self` - Create scanner with default configuration
+
+  **Trait:** Implements `Scanner`
+</ResponseField>
+
+**DefaultAdmissionPolicy** - Configurable prefix-based filtering with LRU cache
+
+<ResponseField name="DefaultAdmissionPolicy" type="struct">
+  Admission policy with path prefix matching and rejection caching.
+
+  **Constructor:**
+  - `new(config: &Config) -> Self` - Create policy from config
+  
+  **Configuration:** Uses `config.model.minsize`, `config.system.exeprefix`, `config.system.mapprefix`
+
+  **Features:**
+  - Prefix patterns with negation support (`!/opt/deny`, `/opt/allow`)
+  - LRU cache with configurable TTL to avoid re-evaluating rejected executables
+  - Cache hit/miss statistics via `stats()` method
+
+  **Trait:** Implements `AdmissionPolicy`
+</ResponseField>
+
+**DefaultModelUpdater** - Lazy Markov model with exponential decay
+
+<ResponseField name="DefaultModelUpdater" type="struct">
+  Updates stores with new observations and maintains Markov transition probabilities.
+
+  **Constructor:**
+  - `new(config: &Config) -> Self` - Create updater from config
+  
+  **Configuration:** Uses `config.model.active_window`, `config.model.decay_factor()`
+
+  **Features:**
+  - Lazy edge creation (only among co-resident executables)
+  - Continuous-time Markov model with exponential decay
+  - Active set pruning to control memory usage
+
+  **Trait:** Implements `ModelUpdater`
+</ResponseField>
+
+Source: [observation/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs)
+
+#### prediction
+
+**MarkovPredictor** - CTMC-based probability predictor
+
+<ResponseField name="MarkovPredictor" type="struct">
+  Predicts exe/map scores using continuous-time Markov chain transitions.
+
+  **Constructor:**
+  - `new(config: &Config) -> Self` - Create predictor from config
+  
+  **Configuration:** Uses `config.model.use_correlation`, `config.model.cycle`
+
+  **Algorithm:**
+  - Computes probability of state transitions within the cycle window
+  - Optional Pearson correlation coefficient for co-occurrence filtering
+  - Map scores derived from exe scores via probabilistic independence
+
+  **Trait:** Implements `Predictor`
+</ResponseField>
+
+<ResponseField name="Prediction" type="struct">
+  Prediction output containing probability scores.
+
+  **Fields:**
+  - `exe_scores: HashMap<ExeId, f32>` - Score per executable (0.0 to 1.0)
+  - `map_scores: HashMap<MapId, f32>` - Score per memory map (0.0 to 1.0)
+</ResponseField>
+
+Source: [prediction/predictor.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs)
+
+#### prefetch
+
+**GreedyPrefetchPlanner** - Budget-constrained greedy planner
+
+<ResponseField name="GreedyPrefetchPlanner" type="struct">
+  Selects highest-scoring maps within memory budget, with I/O-optimized sorting.
+
+  **Constructor:**
+  - `new(config: &Config) -> Self` - Create planner from config
+  
+  **Configuration:** Uses `config.model.memory`, `config.system.sortstrategy`
+
+  **Sort Strategies:**
+  - `None` - Score order only
+  - `Path` - Lexicographic path sorting for sequential access
+  - `Block` - Block device and offset order for HDD optimization
+  - `Inode` - Inode and offset order for filesystem-aware access
+
+  **Trait:** Implements `PrefetchPlanner`
+</ResponseField>
+
+**PosixFadvisePrefetcher** - Linux `posix_fadvise` backend
+
+<ResponseField name="PosixFadvisePrefetcher" type="struct">
+  Issues `POSIX_FADV_WILLNEED` hints with concurrent I/O.
+
+  **Constructor:**
+  - `new(concurrency: usize) -> Self` - Create prefetcher with concurrency limit
+  
+  **Parameters:**
+  - `concurrency` - Maximum number of concurrent fadvise operations
+
+  **Features:**
+  - Asynchronous execution with tokio
+  - Spawn-blocking for system calls
+  - Collects per-map failure information
+
+  **Trait:** Implements `Prefetcher`
+</ResponseField>
+
+**NoopPrefetcher** - No-op implementation for testing
+
+<ResponseField name="NoopPrefetcher" type="struct">
+  Does nothing, useful for dry-run and testing scenarios.
+
+  **Constructor:**
+  - `default() -> Self` - Create no-op prefetcher
+
+  **Trait:** Implements `Prefetcher`
+</ResponseField>
+
+Source: [prefetch/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/mod.rs)
+
+#### persistence
+
+**SqliteRepository** - SQLite-backed state persistence
+
+<ResponseField name="SqliteRepository" type="struct">
+  Persists model state to a SQLite database with WAL journaling.
+
+  **Constructor:**
+  - `async fn new(path: PathBuf) -> Result<Self, Error>` - Create/open database
+  
+  **Features:**
+  - Automatic schema migrations with sqlx
+  - Write-Ahead Logging (WAL) for concurrency
+  - Single connection pool for serialized access
+  - Stores exes, maps, exe-map relationships, and Markov edges
+
+  **Schema:** Managed by sqlx migrations in `migrations/` directory
+
+  **Trait:** Implements `StateRepository`
+</ResponseField>
+
+**NoopRepository** - No-op for stateless operation
+
+<ResponseField name="NoopRepository" type="struct">
+  Returns empty snapshots and ignores saves.
+
+  **Constructor:**
+  - `default() -> Self` - Create no-op repository
+
+  **Trait:** Implements `StateRepository`
+</ResponseField>
+
+Source: [persistence/repo.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs)
+
+#### domain
+
+Core domain types used throughout the crate.
+
+<ResponseField name="Exe" type="struct">
+  Executable tracked by the model.
+
+  **Fields:**
+  - `key: ExeKey` - Unique identifier (path-based)
+  - `running: bool` - Currently running flag
+  - `change_time: u64` - Last state change time
+  - `total_running_time: u64` - Total seconds running
+  - `last_seen_time: Option<u64>` - Last observed timestamp
+</ResponseField>
+
+<ResponseField name="MapSegment" type="struct">
+  Memory-mapped file segment.
+
+  **Fields:**
+  - `path: PathBuf` - File path
+  - `offset: u64` - Offset in file
+  - `length: u64` - Length in bytes
+  - `update_time: u64` - Last update timestamp
+
+  **Constructor:**
+  - `new(path: impl Into<PathBuf>, offset: u64, length: u64, time: u64) -> Self`
+</ResponseField>
+
+<ResponseField name="MarkovEdge" type="struct">
+  Markov model edge between two executables.
+
+  **Fields:**
+  - `time_to_leave: [f32; 4]` - Mean residence time per state
+  - `transition_prob: [[f32; 4]; 4]` - 4x4 transition probability matrix
+  - `both_running_time: u64` - Total co-residence time
+</ResponseField>
+
+<ResponseField name="MarkovState" type="enum">
+  Four-state Markov model.
+
+  **Variants:**
+  - `Neither` - Neither exe running
+  - `AOnly` - Only exe A running
+  - `BOnly` - Only exe B running
+  - `Both` - Both exes running
+
+  **Methods:**
+  - `from_running(a: bool, b: bool) -> Self`
+  - `index() -> usize` - State index (0-3)
+</ResponseField>
+
+<ResponseField name="MemStat" type="struct">
+  System memory statistics.
+
+  **Fields:**
+  - `total: u64` - Total memory (KB)
+  - `free: u64` - Free memory (KB)
+  - `cached: u64` - Cached memory (KB)
+  - `pagein: u64` - Pages read from disk
+  - `pageout: u64` - Pages written to disk
+</ResponseField>
+
+Source: [domain/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/domain/mod.rs)
+
+#### stores
+
+**Stores** - In-memory model data store
+
+<ResponseField name="Stores" type="struct">
+  Central repository of all tracked exes, maps, and Markov edges.
+
+  **Fields:**
+  - `exes: Arena<Exe, ExeId>` - All tracked executables
+  - `maps: Arena<MapSegment, MapId>` - All memory map segments
+  - `exe_maps: ExeMapStore` - Bidirectional exe ↔ map relationships
+  - `markov: MarkovStore` - Markov edges indexed by (ExeId, ExeId) pairs
+  - `active: ActiveSet` - Currently active executables
+  - `model_time: u64` - Current model time
+  - `last_accounting_time: u64` - Last accounting update
+
+  **Methods:**
+  - `ensure_exe(key: ExeKey) -> ExeId` - Get or create exe
+  - `ensure_map(segment: MapSegment) -> MapId` - Get or create map
+  - `attach_map(exe_id: ExeId, map_id: MapId)` - Link exe to map
+  - `ensure_markov_edge(a: ExeId, b: ExeId, time: u64, state: MarkovState) -> bool` - Create edge if missing
+</ResponseField>
+
+Source: [stores/mod.rs](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/stores/mod.rs)
+
+---
+
+## config
+
+The config crate provides TOML-based configuration with serde serialization.
+
+### Public API
+
+```rust
+pub use error::Error;
+pub use memory_policy::MemoryPolicy;
+pub use model::Model;
+pub use persistence::Persistence;
+pub use sort_strategy::SortStrategy;
+pub use system::System;
+```
+
+### Main Types
+
+<ResponseField name="Config" type="struct">
+  Root configuration struct.
+
+  **Fields:**
+  - `model: Model` - Model parameters (cycle time, decay, thresholds)
+  - `system: System` - System parameters (scan, prefetch, path filters)
+  - `persistence: Persistence` - Persistence configuration
+
+  **Methods:**
+  - `load(path: impl AsRef<Path>) -> Result<Self, Error>` - Load from single TOML file
+  - `save(path: impl AsRef<Path>) -> Result<(), Error>` - Save to TOML file
+  - `load_multiple<T, U>(paths: U) -> Result<Self, Error>` - Load and merge multiple configs
+  - `default() -> Self` - Default configuration
+</ResponseField>
+
+<ResponseField name="Model" type="struct">
+  Model tuning parameters.
+
+  **Key Fields:**
+  - `cycle: Duration` - Prediction cycle window
+  - `active_window: Duration` - Active set window
+  - `minsize: u64` - Minimum exe size to track (bytes)
+  - `decay: Duration` - Exponential decay half-life
+  - `use_correlation: bool` - Enable correlation filtering
+  - `memory: MemoryPolicy` - Memory budget policy
+</ResponseField>
+
+<ResponseField name="System" type="struct">
+  System operation parameters.
+
+  **Key Fields:**
+  - `doscan: bool` - Enable scanning
+  - `dopredict: bool` - Enable prediction
+  - `doprefetch: bool` - Enable prefetching
+  - `exeprefix: Vec<String>` - Exe path filter patterns
+  - `mapprefix: Vec<String>` - Map path filter patterns
+  - `sortstrategy: SortStrategy` - I/O ordering strategy
+  - `policy_cache_ttl: Duration` - Admission cache TTL
+  - `policy_cache_capacity: usize` - Max admission cache entries
+</ResponseField>
+
+<ResponseField name="MemoryPolicy" type="struct">
+  Memory budget formula coefficients.
+
+  **Fields:**
+  - `memtotal: i32` - Percentage of total memory (can be negative)
+  - `memfree: i32` - Percentage of free memory
+  - `memcached: i32` - Percentage of cached memory
+
+  **Formula:** `budget = (memtotal × total / 100) + (memfree × free / 100) + (memcached × cached / 100)`
+</ResponseField>
+
+<ResponseField name="SortStrategy" type="enum">
+  Prefetch ordering strategy.
+
+  **Variants:**
+  - `None` - Score order only
+  - `Path` - Lexicographic path order
+  - `Block` - Physical block order (HDD-friendly)
+  - `Inode` - Inode order (filesystem-aware)
+</ResponseField>
+
+<ResponseField name="Persistence" type="struct">
+  State persistence configuration.
+
+  **Fields:**
+  - `autosave_interval: Option<Duration>` - Periodic save interval
+  - `db_path: Option<PathBuf>` - SQLite database path
+</ResponseField>
+
+### Configuration Example
+
+```toml
+[model]
+cycle = 30                  # 30 second prediction window
+active_window = 300         # 5 minute active set
+minsize = 8388608          # 8 MB minimum
+decay = 3600               # 1 hour half-life
+use_correlation = true
+
+[model.memory]
+memtotal = 0
+memfree = 50               # Use 50% of free memory
+memcached = 25             # Use 25% of cached memory
+
+[system]
+doscan = true
+dopredict = true
+doprefetch = true
+sortstrategy = "Block"
+exeprefix = ["!/snap/", "!/tmp/", "/usr/bin/", "/usr/local/bin/"]
+mapprefix = ["!/dev/", "!/tmp/", "/usr/lib/", "/lib/"]
+policy_cache_ttl = 300     # 5 minute cache
+policy_cache_capacity = 1024
+
+[persistence]
+autosave_interval = 600    # Save every 10 minutes
+db_path = "/var/lib/preload-rs/state.db"
+```
+
+Source: [config/src/lib.rs](https://github.com/your-org/preload-rs/blob/main/crates/config/src/lib.rs)
+
+---
+
+## cli
+
+The cli crate provides the command-line interface. It has minimal public API surface and is primarily internal.
+
+### Structure
+
+```rust
+// lib.rs is mostly empty - functionality in main.rs
+#![forbid(unsafe_code)]
+```
+
+The CLI binary is the primary consumer of the `orchestrator` and `config` crates, wiring them together with signal handling, logging, and daemon operation.
+
+See the [CLI source](https://github.com/your-org/preload-rs/blob/main/crates/cli/src/main.rs) for implementation details.
+
+---
+
+## Complete Integration Example
+
+```rust
+use config::Config;
+use orchestrator::{PreloadEngine, Services};
+use orchestrator::clock::SystemClock;
+use orchestrator::observation::{ProcfsScanner, DefaultAdmissionPolicy, DefaultModelUpdater};
+use orchestrator::prediction::MarkovPredictor;
+use orchestrator::prefetch::{GreedyPrefetchPlanner, PosixFadvisePrefetcher};
+use orchestrator::persistence::SqliteRepository;
+use std::path::PathBuf;
+use std::time::Duration;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load configuration
+    let config = Config::load("/etc/preload-rs/config.toml")?;
+    
+    // Or build configuration programmatically
+    let mut config = Config::default();
+    config.model.cycle = Duration::from_secs(30);
+    config.model.minsize = 8 * 1024 * 1024; // 8 MB
+    config.system.exeprefix = vec!["!/snap/".into(), "/usr/bin/".into()];
+    
+    // Create services
+    let db_path = PathBuf::from("/var/lib/preload-rs/state.db");
+    let services = Services {
+        scanner: Box::new(ProcfsScanner::new()),
+        admission: Box::new(DefaultAdmissionPolicy::new(&config)),
+        updater: Box::new(DefaultModelUpdater::new(&config)),
+        predictor: Box::new(MarkovPredictor::new(&config)),
+        planner: Box::new(GreedyPrefetchPlanner::new(&config)),
+        prefetcher: Box::new(PosixFadvisePrefetcher::new(16)),
+        repo: Box::new(SqliteRepository::new(db_path).await?),
+        clock: Box::new(SystemClock),
+    };
+    
+    // Create engine and load state
+    let mut engine = PreloadEngine::load(config, services).await?;
+    
+    // Run prediction/prefetch cycles
+    loop {
+        let report = engine.tick().await?;
+        
+        println!(
+            "Cycle complete: scanned in {}μs, prefetched {} bytes across {} maps",
+            report.scan_time_us,
+            report.prefetch_report.total_bytes,
+            report.prefetch_report.num_maps
+        );
+        
+        if !report.prefetch_report.failures.is_empty() {
+            eprintln!("Failed to prefetch {} maps", report.prefetch_report.failures.len());
+        }
+        
+        // Periodic save
+        engine.save().await?;
+        
+        // Wait before next cycle
+        tokio::time::sleep(Duration::from_secs(30)).await;
+    }
+}
+```
+
+For more examples, see:
+- [Engine Pipeline Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs)
+- [Predictor Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/predictor.rs)
+- [Prefetcher Integration Test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/prefetcher_integration.rs)

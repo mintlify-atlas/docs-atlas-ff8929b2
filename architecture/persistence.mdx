@@ -1,0 +1,452 @@
+---
+title: Persistence
+description: SQLite schema, snapshot model, and autosave behavior
+---
+
+## Overview
+
+preload-rs uses **snapshot-based persistence** to save and restore the entire model state. State is keyed by external identifiers (file paths) rather than internal IDs, allowing the system to restart and rebuild its internal representation.
+
+The persistence layer is implemented in `crates/orchestrator/src/persistence/`.
+
+## Snapshot Model
+
+### StoresSnapshot
+
+The complete state snapshot contains metadata and the actual state:
+
+```rust
+pub struct StoresSnapshot {
+    pub meta: SnapshotMeta,
+    pub state: StateSnapshot,
+}
+
+pub struct SnapshotMeta {
+    pub schema_version: u32,
+    pub app_version: Option<String>,
+    pub created_at: Option<SystemTime>,
+}
+
+pub struct StateSnapshot {
+    pub model_time: u64,
+    pub last_accounting_time: u64,
+    pub exes: Vec<ExeRecord>,
+    pub maps: Vec<MapRecord>,
+    pub exe_maps: Vec<ExeMapRecord>,
+    pub markov_edges: Vec<MarkovRecord>,
+}
+```
+
+`crates/orchestrator/src/persistence/snapshot.rs:10-30`
+
+### Snapshot Schema Version
+
+Current schema version: **1**
+
+Future versions can add fields or change serialization while maintaining backward compatibility through version detection.
+
+`crates/orchestrator/src/persistence/snapshot.rs:7`
+
+## What's Persisted
+
+### 1. Executables (ExeRecord)
+
+```rust
+pub struct ExeRecord {
+    pub path: PathBuf,              // Executable path (stable key)
+    pub total_running_time: u64,    // Cumulative running time
+    pub last_seen_time: Option<u64>,// Last observation time
+}
+```
+
+`crates/orchestrator/src/persistence/snapshot.rs:33-37`
+
+Persisted to table: `exes`
+
+**Key insight:** The `path` serves as the stable external identifier. Internal `ExeId` values are transient and regenerated on load.
+
+### 2. Memory Maps (MapRecord)
+
+```rust
+pub struct MapRecord {
+    pub path: PathBuf,      // File path
+    pub offset: u64,        // Offset within file
+    pub length: u64,        // Length of mapped region
+    pub update_time: u64,   // Last update time
+}
+```
+
+`crates/orchestrator/src/persistence/snapshot.rs:40-45`
+
+Persisted to table: `maps`
+
+**Composite key:** `(path, offset, length)` uniquely identifies each map segment.
+
+### 3. Executable-Map Relationships (ExeMapRecord)
+
+```rust
+pub struct ExeMapRecord {
+    pub exe_path: PathBuf,  // References ExeRecord
+    pub map_key: MapKey,    // References MapRecord (path, offset, length)
+    pub prob: f32,          // Reserved for future use (currently always 1.0)
+}
+```
+
+`crates/orchestrator/src/persistence/snapshot.rs:48-52`
+
+Persisted to table: `exe_maps`
+
+This records which maps belong to which executables, reconstructing the bidirectional index on load.
+
+### 4. Markov Edges (MarkovRecord)
+
+```rust
+pub struct MarkovRecord {
+    pub exe_a: PathBuf,                 // First executable
+    pub exe_b: PathBuf,                 // Second executable
+    pub time_to_leave: [f32; 4],        // Expected dwell time per state
+    pub transition_prob: [[f32; 4]; 4], // Transition probability matrix
+    pub both_running_time: u64,         // Time both ran together
+}
+```
+
+`crates/orchestrator/src/persistence/snapshot.rs:55-61`
+
+Persisted to table: `markovs`
+
+**Key insight:** Only the learned statistics are persisted. Current state (`MarkovState`) and transition timestamps are **not** persisted since they're runtime-only data.
+
+## What's NOT Persisted
+
+The following are ephemeral and reconstructed at startup:
+
+| Data | Reason | Reconstruction Strategy |
+|------|--------|------------------------|
+| **Internal IDs** | Transient, implementation detail | Regenerated via `SlotMap` on load |
+| **Active set** | Time-windowed, depends on current time | Rebuilt from `last_seen_time` and `active_window` |
+| **Prediction scores** | Recomputed each cycle | Computed by predictor on first tick |
+| **MemStat** | System memory is dynamic | Scanned from `/proc/meminfo` each cycle |
+| **Running flags** | Process state changes rapidly | Updated during first scan after load |
+| **Current Markov state** | Runtime transition tracking | Recomputed from running flags on load |
+
+<Note>
+The active set is partially reconstructed on load by checking which executables have `last_seen_time` within the configured `active_window` from current `model_time`.
+</Note>
+
+## SQLite Schema
+
+The schema is defined in `crates/orchestrator/migrations/20260131000000_init.sql`.
+
+### state Table
+
+```sql
+CREATE TABLE IF NOT EXISTS state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    schema_version INTEGER NOT NULL,
+    app_version TEXT,
+    created_at TEXT,
+    model_time INTEGER NOT NULL,
+    last_accounting_time INTEGER NOT NULL
+);
+```
+
+Single-row table (id=1) containing global state.
+
+### exes Table
+
+```sql
+CREATE TABLE IF NOT EXISTS exes (
+    path TEXT NOT NULL PRIMARY KEY,
+    total_running_time INTEGER NOT NULL,
+    last_seen_time INTEGER
+);
+```
+
+One row per tracked executable. Path is the primary key.
+
+### maps Table
+
+```sql
+CREATE TABLE IF NOT EXISTS maps (
+    path TEXT NOT NULL,
+    offset INTEGER NOT NULL,
+    length INTEGER NOT NULL,
+    update_time INTEGER NOT NULL,
+    PRIMARY KEY (path, offset, length)
+);
+```
+
+One row per memory map segment. Composite primary key on `(path, offset, length)`.
+
+### exe_maps Table
+
+```sql
+CREATE TABLE IF NOT EXISTS exe_maps (
+    exe_path TEXT NOT NULL,
+    map_path TEXT NOT NULL,
+    map_offset INTEGER NOT NULL,
+    map_length INTEGER NOT NULL,
+    prob REAL NOT NULL,
+    PRIMARY KEY (exe_path, map_path, map_offset, map_length)
+);
+```
+
+Junction table linking executables to maps.
+
+### markovs Table
+
+```sql
+CREATE TABLE IF NOT EXISTS markovs (
+    exe_a TEXT NOT NULL,
+    exe_b TEXT NOT NULL,
+    time_to_leave BLOB NOT NULL,
+    transition_prob BLOB NOT NULL,
+    both_running_time INTEGER NOT NULL,
+    PRIMARY KEY (exe_a, exe_b)
+);
+```
+
+One row per Markov edge. Arrays are serialized as BLOBs using `rkyv`.
+
+<Warning>
+The `time_to_leave` and `transition_prob` fields use `rkyv` for zero-copy serialization. Changing array dimensions requires a schema migration.
+</Warning>
+
+## Serialization Format
+
+### Array Serialization
+
+The `[f32; 4]` and `[[f32; 4]; 4]` arrays in Markov edges are serialized using `rkyv`:
+
+```rust
+let ttl: Vec<u8> = rkyv::to_bytes::<rkyv::rancor::Error>(&markov.time_to_leave)
+    .map_err(|err| Error::RkyvSerialize(err.to_string()))?
+    .into();
+```
+
+`crates/orchestrator/src/persistence/repo.rs:167-169`
+
+And deserialized on load:
+
+```rust
+let time_to_leave: [f32; 4] = rkyv::from_bytes::<[f32; 4], rkyv::rancor::Error>(&ttl)
+    .map_err(|err| Error::RkyvDeserialize(err.to_string()))?;
+```
+
+`crates/orchestrator/src/persistence/repo.rs:285-286`
+
+This provides compact binary representation with minimal overhead.
+
+## StateRepository Trait
+
+All persistence is abstracted behind the `StateRepository` trait:
+
+```rust
+#[async_trait]
+pub trait StateRepository: Send + Sync {
+    /// Load a snapshot from persistence.
+    async fn load(&self) -> Result<StoresSnapshot, Error>;
+    
+    /// Persist a snapshot.
+    async fn save(&self, snapshot: &StoresSnapshot) -> Result<(), Error>;
+}
+```
+
+`crates/orchestrator/src/persistence/repo.rs:16-21`
+
+### Implementations
+
+#### SqliteRepository
+
+Production implementation backed by SQLite with WAL mode:
+
+```rust
+let options = SqliteConnectOptions::new()
+    .filename(&path)
+    .create_if_missing(true)
+    .journal_mode(SqliteJournalMode::Wal);
+```
+
+`crates/orchestrator/src/persistence/repo.rs:64-67`
+
+**WAL mode** (Write-Ahead Logging) provides:
+- Better concurrency (readers don't block writers)
+- Atomic commits
+- Crash safety
+
+#### NoopRepository
+
+Test/dev implementation that returns empty state on load and ignores saves:
+
+```rust
+#[derive(Debug, Default)]
+pub struct NoopRepository;
+```
+
+`crates/orchestrator/src/persistence/repo.rs:24`
+
+## Autosave Behavior
+
+The engine automatically saves state at configured intervals during `run_until`:
+
+```rust
+let autosave = self
+    .config
+    .persistence
+    .autosave_interval
+    .unwrap_or(self.config.system.autosave);
+
+if autosave.as_secs() > 0 {
+    let elapsed = self.last_save.elapsed();
+    if elapsed >= autosave {
+        self.save().await?;
+        self.last_save = Instant::now();
+    }
+}
+```
+
+`crates/orchestrator/src/engine.rs:191-203`
+
+### Configuration
+
+```toml
+[persistence]
+state_path = "/var/lib/preload-rs/state.db"
+autosave_interval = 300      # Save every 5 minutes
+save_on_shutdown = true      # Save when receiving SIGTERM/SIGINT
+```
+
+**Default:** `autosave_interval = 300` seconds (5 minutes)
+
+### Manual Save
+
+Send `SIGUSR2` to trigger an immediate save without waiting for the next autosave interval:
+
+```bash
+kill -SIGUSR2 $(pidof preload-rs)
+```
+
+This is useful before manually stopping the daemon or for debugging.
+
+## Save Process
+
+Saving is a transactional all-or-nothing operation:
+
+1. Begin SQLite transaction
+2. Delete all existing data (`DELETE FROM ...`)
+3. Insert new snapshot data
+4. Commit transaction
+
+```rust
+async fn save_snapshot(&self, snapshot: &StoresSnapshot) -> Result<(), Error> {
+    let mut tx = self.pool.begin().await?;
+    
+    sqlx::query!("DELETE FROM state").execute(&mut *tx).await?;
+    sqlx::query!("DELETE FROM exes").execute(&mut *tx).await?;
+    sqlx::query!("DELETE FROM maps").execute(&mut *tx).await?;
+    sqlx::query!("DELETE FROM exe_maps").execute(&mut *tx).await?;
+    sqlx::query!("DELETE FROM markovs").execute(&mut *tx).await?;
+    
+    // ... insert new data ...
+    
+    tx.commit().await?;
+    Ok(())
+}
+```
+
+`crates/orchestrator/src/persistence/repo.rs:82-189`
+
+<Note>
+The delete-then-insert approach ensures no orphaned data remains from removed executables or maps.
+</Note>
+
+## Load Process
+
+Loading reconstructs the in-memory `Stores` from persisted snapshots:
+
+1. Load metadata and global state
+2. Create all `MapSegment` entries
+3. Create all `Exe` entries with statistics
+4. Rebuild active set from `last_seen_time`
+5. Reattach maps to executables
+6. Recreate Markov edges with statistics
+7. Prune edges not in active set
+
+```rust
+fn stores_from_snapshot(snapshot: StoresSnapshot, active_window: u64) -> Result<Stores, Error> {
+    let mut stores = Stores {
+        model_time: snapshot.state.model_time,
+        last_accounting_time: snapshot.state.last_accounting_time,
+        ..Default::default()
+    };
+    
+    // Load maps
+    for map in snapshot.state.maps {
+        let segment = MapSegment::new(map.path, map.offset, map.length, map.update_time);
+        stores.ensure_map(segment);
+    }
+    
+    // Load exes
+    for exe in snapshot.state.exes {
+        let exe_key = ExeKey::new(exe.path);
+        let exe_id = stores.ensure_exe(exe_key);
+        // ... restore statistics ...
+    }
+    
+    // Rebuild active set
+    for (exe_id, exe) in stores.exes.iter() {
+        if let Some(last_seen) = exe.last_seen_time
+            && stores.model_time.saturating_sub(last_seen) <= active_window
+        {
+            stores.active.update([exe_id], stores.model_time);
+        }
+    }
+    
+    // ... restore exe_maps and markov edges ...
+    
+    Ok(stores)
+}
+```
+
+`crates/orchestrator/src/engine.rs:351-421`
+
+## Error Handling
+
+Persistence errors are propagated as `Error::Persistence` or specific database errors:
+
+```rust
+pub enum Error {
+    Sqlx(sqlx::Error),
+    RkyvSerialize(String),
+    RkyvDeserialize(String),
+    // ...
+}
+```
+
+Failed saves do not crash the engine—it logs the error and continues. This ensures temporary I/O issues don't halt the daemon.
+
+Failed loads during startup are fatal and cause the engine to exit.
+
+## Migration Strategy
+
+When schema changes are needed:
+
+1. Increment `SNAPSHOT_SCHEMA_VERSION`
+2. Add new migration file `crates/orchestrator/migrations/YYYYMMDD_description.sql`
+3. Update `stores_from_snapshot` to handle multiple schema versions
+4. Run `sqlx migrate run` to apply
+
+Example version detection:
+
+```rust
+match snapshot.meta.schema_version {
+    1 => load_v1(snapshot),
+    2 => load_v2(snapshot),
+    _ => Err(Error::UnsupportedSchema(snapshot.meta.schema_version)),
+}
+```
+
+## Related Topics
+
+- [Architecture Overview](/architecture/overview) — System architecture and pipeline
+- [Markov Model](/architecture/markov-model) — Understanding the persisted statistics

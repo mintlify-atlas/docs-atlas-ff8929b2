@@ -1,0 +1,383 @@
+---
+title: Configuration Reference
+description: Complete reference for all preload-rs configuration options
+---
+
+## Overview
+
+preload-rs uses TOML configuration files to control its behavior. Configuration can be split across multiple files, with later files overriding earlier ones.
+
+## Configuration Structure
+
+The configuration file consists of three main sections:
+- `[model]` - Machine learning and prediction settings
+- `[system]` - System scanning and prefetch behavior
+- `[persistence]` - State database settings
+
+## Model Configuration
+
+The `[model]` section controls the prediction algorithm and learning behavior.
+
+<ParamField path="model.cycle" type="integer" default="20">
+  Observation/prediction cycle length in seconds.
+  
+  Defines how often preload-rs scans running processes, updates its models, and triggers prefetch operations.
+  
+  ```toml
+  [model]
+  cycle = 20
+  ```
+</ParamField>
+
+<ParamField path="model.use_correlation" type="boolean" default="true">
+  Whether to use correlation in prediction.
+  
+  Enables correlation-based prediction between executables to improve accuracy when applications tend to run together.
+  
+  ```toml
+  [model]
+  use_correlation = true
+  ```
+</ParamField>
+
+<ParamField path="model.minsize" type="integer" default="2000000">
+  Minimum total mapped bytes to track an executable.
+  
+  Executables with less than this amount of memory mapped are ignored to reduce overhead from tracking trivial programs.
+  
+  ```toml
+  [model]
+  minsize = 2000000  # 2 MB
+  ```
+</ParamField>
+
+<ParamField path="model.active_window" type="integer" default="21600">
+  Active-set window for lazy Markov edges in seconds.
+  
+  Defines the time window (default 6 hours) for considering process correlations in the Markov model.
+  
+  ```toml
+  [model]
+  active_window = 21600  # 6 hours
+  ```
+</ParamField>
+
+<ParamField path="model.half_life" type="integer" default="none">
+  Optional half-life for exponential decay in seconds.
+  
+  When set, this overrides the `decay` parameter. The half-life determines how quickly old observations lose influence.
+  
+  ```toml
+  [model]
+  half_life = 3600  # 1 hour
+  ```
+</ParamField>
+
+<ParamField path="model.decay" type="float" default="0.01">
+  Exponential decay factor (per second).
+  
+  Used for exponentially-fading means in the prediction model. Ignored if `half_life` is set. Higher values mean faster decay of old patterns.
+  
+  ```toml
+  [model]
+  decay = 0.01
+  ```
+</ParamField>
+
+### Memory Policy
+
+The `[model.memory]` subsection defines the memory budget policy.
+
+<ParamField path="model.memory.memtotal" type="integer" default="-10">
+  Percentage of total system memory to consider (clamped to -100..=100).
+  
+  Negative values are subtracted from total memory, positive values are added. Default `-10` means use 90% of total memory as the upper bound.
+  
+  ```toml
+  [model.memory]
+  memtotal = -10
+  ```
+</ParamField>
+
+<ParamField path="model.memory.memfree" type="integer" default="50">
+  Percentage of free memory to consider (clamped to -100..=100).
+  
+  Controls how much free memory should be available before aggressive prefetching. Default `50` means maintain at least 50% free memory.
+  
+  ```toml
+  [model.memory]
+  memfree = 50
+  ```
+</ParamField>
+
+<ParamField path="model.memory.memcached" type="integer" default="0">
+  Percentage of cached memory to consider (clamped to -100..=100).
+  
+  Influences prefetch budget based on cache utilization.
+  
+  ```toml
+  [model.memory]
+  memcached = 0
+  ```
+</ParamField>
+
+## System Configuration
+
+The `[system]` section controls process scanning, prefetch behavior, and filtering.
+
+<ParamField path="system.doscan" type="boolean" default="true">
+  Enable scanning and observation.
+  
+  When disabled, preload-rs will not scan running processes.
+  
+  ```toml
+  [system]
+  doscan = true
+  ```
+</ParamField>
+
+<ParamField path="system.dopredict" type="boolean" default="true">
+  Enable prediction.
+  
+  When disabled, preload-rs will observe but not generate predictions.
+  
+  ```toml
+  [system]
+  dopredict = true
+  ```
+</ParamField>
+
+<ParamField path="system.autosave" type="integer" default="3600">
+  Autosave interval in seconds.
+  
+  How often to automatically save state to disk. Default is 3600 seconds (1 hour).
+  
+  ```toml
+  [system]
+  autosave = 3600
+  ```
+</ParamField>
+
+<ParamField path="system.exeprefix" type="array" default='["!/usr/sbin/", "!/usr/local/sbin/", "/usr/", "!/"]'>
+  Executable path prefixes to include/exclude.
+  
+  Filters which executables are tracked. Prefixes starting with `!` are deny rules. Rules are evaluated in order.
+  
+  **Default behavior:**
+  - Deny `/usr/sbin/*` and `/usr/local/sbin/*`
+  - Allow `/usr/*`
+  - Deny everything else (`!/`)
+  
+  ```toml
+  [system]
+  exeprefix = [
+    "!/usr/sbin/",
+    "!/usr/local/sbin/",
+    "/usr/",
+    "!/"
+  ]
+  ```
+</ParamField>
+
+<ParamField path="system.mapprefix" type="array" default='["/usr/", "/lib/", "/var/cache/", "!/"]'>
+  Mapped file prefixes to include/exclude.
+  
+  Filters which memory-mapped files are tracked for prefetching. Prefixes starting with `!` are deny rules.
+  
+  **Default behavior:**
+  - Allow `/usr/*`, `/lib/*`, `/var/cache/*`
+  - Deny everything else (`!/`)
+  
+  ```toml
+  [system]
+  mapprefix = [
+    "/usr/",
+    "/lib/",
+    "/var/cache/",
+    "!/"
+  ]
+  ```
+</ParamField>
+
+<ParamField path="system.sortstrategy" type="string" default="block">
+  Prefetch sort strategy.
+  
+  Determines the order in which files are prefetched. Available strategies:
+  - `none` - No sorting, prefetch in arbitrary order
+  - `path` - Sort by file path
+  - `block` - Sort by block device (default, optimal for spinning disks)
+  - `inode` - Sort by inode number
+  
+  ```toml
+  [system]
+  sortstrategy = "block"
+  ```
+</ParamField>
+
+<ParamField path="system.prefetch_concurrency" type="integer" default="auto">
+  Prefetch worker concurrency.
+  
+  Number of concurrent prefetch workers. When omitted, defaults to the number of CPU cores. Set to `0` to disable prefetch entirely.
+  
+  ```toml
+  [system]
+  prefetch_concurrency = 8
+  ```
+</ParamField>
+
+<ParamField path="system.policy_cache_ttl" type="integer" default="300">
+  Cache admission rejections TTL in seconds.
+  
+  How long to cache policy admission rejections. Set to `0` to disable caching.
+  
+  ```toml
+  [system]
+  policy_cache_ttl = 300
+  ```
+</ParamField>
+
+<ParamField path="system.policy_cache_capacity" type="integer" default="1024">
+  Max number of cached rejection entries.
+  
+  Maximum size of the policy cache. Set to `0` to disable caching.
+  
+  ```toml
+  [system]
+  policy_cache_capacity = 1024
+  ```
+</ParamField>
+
+## Persistence Configuration
+
+The `[persistence]` section controls state database behavior.
+
+<ParamField path="persistence.state_path" type="string" default="none">
+  Optional path to the state database.
+  
+  When not set, preload-rs runs in memory-only mode. The state database stores learned patterns, Markov models, and historical data.
+  
+  ```toml
+  [persistence]
+  state_path = "/var/lib/preload-rs/state.db"
+  ```
+</ParamField>
+
+<ParamField path="persistence.autosave_interval" type="integer" default="none">
+  Optional override for autosave interval in seconds.
+  
+  When set, overrides `system.autosave`. Allows separate control of state autosave frequency.
+  
+  ```toml
+  [persistence]
+  autosave_interval = 120
+  ```
+</ParamField>
+
+<ParamField path="persistence.save_on_shutdown" type="boolean" default="true">
+  Save state when shutting down.
+  
+  When enabled, preload-rs saves state before exiting (on signals or errors).
+  
+  ```toml
+  [persistence]
+  save_on_shutdown = true
+  ```
+</ParamField>
+
+## Complete Example
+
+Here's a complete configuration file with all options:
+
+```toml
+# preload-rs example configuration
+
+[model]
+# Observation/prediction cycle length.
+cycle = 20
+# Whether to use correlation in prediction.
+use_correlation = true
+# Minimum total mapped bytes to track an executable.
+minsize = 2000000
+# Active-set window for lazy Markov edges.
+active_window = 21600
+# Optional half-life for exponential decay (seconds).
+# half_life = 3600
+# Exponential decay factor.
+decay = 0.01
+
+[model.memory]
+# Memory budget policy (percentages, clamped to -100..=100).
+memtotal = -10
+memfree = 50
+memcached = 0
+
+[system]
+# Enable scanning and prediction.
+doscan = true
+dopredict = true
+# Autosave interval in seconds.
+autosave = 3600
+# Executable path prefixes to include/exclude. "!" means deny.
+exeprefix = ["!/usr/sbin/", "!/usr/local/sbin/", "/usr/", "!/"]
+# Mapped file prefixes to include/exclude. "!" means deny.
+mapprefix = ["/usr/", "/lib/", "/var/cache/", "!/"]
+# Prefetch sort strategy: none | path | block | inode.
+sortstrategy = "block"
+# Prefetch worker concurrency. Omit for auto (CPU cores). 0 disables prefetch.
+# prefetch_concurrency = 8
+# Cache admission rejections (TTL in seconds). 0 disables caching.
+policy_cache_ttl = 300
+# Max number of cached rejection entries. 0 disables caching.
+policy_cache_capacity = 1024
+
+[persistence]
+# Optional path to the state database.
+# state_path = "/var/lib/preload-rs/state.db"
+# Optional override for autosave interval (seconds).
+# autosave_interval = 120
+save_on_shutdown = true
+```
+
+## Configuration Merging
+
+When loading multiple configuration files (via `--config-dir` or default search paths), preload-rs merges them using these rules:
+
+1. **Tables are merged recursively** - Settings from later files override earlier ones
+2. **Arrays are replaced entirely** - Later arrays completely replace earlier ones
+3. **Scalars are replaced** - Later values override earlier ones
+
+### Example
+
+Base config (`/etc/preload-rs/config.toml`):
+```toml
+[model]
+cycle = 60
+use_correlation = true
+
+[system]
+doscan = false
+```
+
+Override config (`~/.config/preload-rs/config.toml`):
+```toml
+[persistence]
+autosave_interval = 120
+```
+
+Resulting merged configuration:
+```toml
+[model]
+cycle = 60
+use_correlation = true
+
+[system]
+doscan = false
+
+[persistence]
+autosave_interval = 120
+```
+
+## See Also
+
+- [CLI Reference](/usage/cli-reference) - Command-line options
+- [Signals](/usage/signals) - Runtime signal handling

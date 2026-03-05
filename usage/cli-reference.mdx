@@ -1,0 +1,171 @@
+---
+title: CLI Reference
+description: Complete reference for preload-rs command-line options
+---
+
+## Overview
+
+preload-rs accepts various command-line flags to control its behavior, specify configuration locations, and adjust logging verbosity.
+
+## Basic Usage
+
+```bash
+preload-rs [OPTIONS]
+```
+
+## Options
+
+### Configuration
+
+<ParamField path="--config" type="FILE" default="none">
+  Path to a configuration file.
+  
+  When specified, preload-rs loads this file as the primary configuration. If not provided, the system searches for configuration files in the following order:
+  
+  1. `/etc/preload-rs/config.toml` (system config)
+  2. `/etc/preload-rs/config.d/*.toml` (system config directory)
+  3. `$XDG_CONFIG_HOME/preload-rs/config.toml` or `~/.config/preload-rs/config.toml` (user config)
+  4. `./config.toml` (local directory)
+  
+  **Example:**
+  ```bash
+  preload-rs --config /etc/preload-rs/custom.toml
+  ```
+</ParamField>
+
+<ParamField path="--config-dir" type="DIR" default="none">
+  Path to a directory containing additional TOML config files.
+  
+  All `.toml` files in this directory are loaded in alphabetical order and merged with the base configuration. Later files override earlier ones. This is useful for modular configuration setups.
+  
+  **Example:**
+  ```bash
+  preload-rs --config-dir /etc/preload-rs/config.d
+  ```
+</ParamField>
+
+### State Management
+
+<ParamField path="--state" type="FILE" default="none">
+  Path to the state database.
+  
+  Overrides the `persistence.state_path` configuration option. The state database stores learned patterns, Markov models, and historical data between runs.
+  
+  **Example:**
+  ```bash
+  preload-rs --state /var/lib/preload-rs/state.db
+  ```
+</ParamField>
+
+<ParamField path="--no-persist" type="flag" default="false">
+  Disable persistence entirely.
+  
+  When enabled, preload-rs runs in memory-only mode without loading or saving any state. Useful for testing or temporary deployments.
+  
+  **Example:**
+  ```bash
+  preload-rs --no-persist
+  ```
+</ParamField>
+
+### Operational Modes
+
+<ParamField path="--once" type="flag" default="false">
+  Run a single tick and exit.
+  
+  Executes one observation/prediction cycle and then terminates. Primarily used for testing, debugging, or manual prefetch operations.
+  
+  **Example:**
+  ```bash
+  preload-rs --once
+  ```
+</ParamField>
+
+<ParamField path="--no-prefetch" type="flag" default="false">
+  Disable prefetch I/O (observe/predict only).
+  
+  When enabled, preload-rs will observe running processes and update its prediction models, but will not perform any actual prefetching. Useful for dry-run testing or analysis.
+  
+  **Example:**
+  ```bash
+  preload-rs --no-prefetch
+  ```
+</ParamField>
+
+### Logging
+
+<ParamField path="-v, --verbose" type="flag" default="info">
+  Increase verbosity level.
+  
+  Can be specified multiple times to increase verbosity:
+  - No flag: `info` level
+  - `-v`: `debug` level
+  - `-vv` or more: `trace` level
+  
+  **Examples:**
+  ```bash
+  # Debug level logging
+  preload-rs -v
+  
+  # Trace level logging
+  preload-rs -vv
+  ```
+</ParamField>
+
+## Configuration Resolution
+
+When using `--config` with `--config-dir`, the configuration system works as follows:
+
+1. Load the base config file from `--config`
+2. Load all `.toml` files from `--config-dir` in alphabetical order
+3. Merge configurations, with later files overriding earlier ones
+
+When neither `--config` nor `--config-dir` is specified:
+
+1. Load system config: `/etc/preload-rs/config.toml`
+2. Load system config directory: `/etc/preload-rs/config.d/*.toml`
+3. Load user config: `$XDG_CONFIG_HOME/preload-rs/config.toml`
+4. Load local config: `./config.toml`
+5. Apply CLI overrides (like `--state`)
+
+## Examples
+
+### Standard Daemon Mode
+
+```bash
+preload-rs
+```
+
+Runs with default configuration and enters daemon mode.
+
+### Custom Configuration with Verbose Logging
+
+```bash
+preload-rs --config /etc/preload-rs/production.toml -vv
+```
+
+### Testing with No Persistence
+
+```bash
+preload-rs --no-persist --once -v
+```
+
+Runs a single cycle without persistence, with debug logging.
+
+### Observation-Only Mode
+
+```bash
+preload-rs --no-prefetch --state /tmp/test.db
+```
+
+Observes and learns patterns but doesn't prefetch, using a custom state location.
+
+## Exit Codes
+
+- `0`: Successful execution
+- Non-zero: Error occurred (check logs for details)
+
+## See Also
+
+- [Configuration](/usage/configuration) - Detailed configuration file reference
+- [Signals](/usage/signals) - Runtime signal handling

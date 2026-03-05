@@ -1,0 +1,209 @@
+---
+title: Understanding Preload
+description: Learn how preload-rs works and what problems it solves
+---
+
+## What is preload-rs?
+
+preload-rs is an adaptive daemon that prefetches binary files and shared libraries from disk into memory to achieve faster application startup times. It monitors the applications you run and uses machine learning to predict what you're likely to run next.
+
+## The Problem: HDD Latency
+
+Traditional hard disk drives (HDDs) have significant latency when seeking and reading data:
+
+- Mechanical seek times can be 5-15ms per operation
+- Reading scattered files requires multiple seeks
+- Application startup involves reading dozens of binaries and libraries
+- Cold starts can take several seconds on HDDs
+
+preload-rs solves this by:
+
+1. **Learning** your usage patterns
+2. **Predicting** what you'll run next
+3. **Prefetching** those files into RAM during idle time
+4. Making those files instantly available when you need them
+
+<Note>
+While SSDs have much lower latency, preload-rs can still improve startup times by ensuring frequently-used files are already in the page cache.
+</Note>
+
+## How Prediction Works: Markov Models
+
+preload-rs builds a **Markov-based probabilistic model** that captures correlations between applications.
+
+### The Markov Graph
+
+The system maintains a graph where:
+
+- **Nodes** represent executable binaries
+- **Edges** represent relationships between pairs of executables
+- Each edge tracks:
+  - Time both apps run together
+  - Transition probabilities between states
+  - Time-to-leave estimates for each state
+
+### Markov States
+
+For any pair of applications (A, B), there are four possible states:
+
+| State | A Running | B Running |
+|-------|-----------|----------|
+| Neither | No | No |
+| AOnly | Yes | No |
+| BOnly | No | Yes |
+| Both | Yes | Yes |
+
+The model tracks transition probabilities between these states based on your actual usage.
+
+### Correlation Analysis
+
+When `use_correlation = true` (default), preload-rs calculates correlation coefficients between applications:
+
+```rust
+// From predictor.rs:28-49
+// Correlation formula:
+// numerator = (t * ab_time) - (a_time * b_time)
+// denominator = sqrt(a_time * b_time * (t - a_time) * (t - b_time))
+// correlation = numerator / denominator
+```
+
+Higher correlation means applications are more likely to be used together, increasing prefetch priority.
+
+### Prediction Probability
+
+For each executable not currently running, preload-rs calculates:
+
+1. **Base probability**: Using transition probabilities and time-to-leave estimates
+2. **Correlation factor**: If enabled, multiplies by correlation coefficient
+3. **Final score**: `(base_probability * correlation).clamp(0.0, 1.0)`
+
+The formula for probability an app is needed:
+
+```
+p_needed = (1 - exp(-cycle / time_to_leave)) * p_runs_next
+```
+
+Where:
+- `cycle` is the prediction cycle length (default 20 seconds)
+- `time_to_leave` is the exponentially-smoothed estimate of how long before the state changes
+- `p_runs_next` is the probability the app will run in the target state
+
+## Process Scanning
+
+Every cycle (default 20 seconds), preload-rs scans running processes via `/proc`:
+
+### Executable Discovery
+
+For each running process:
+
+1. Read `/proc/[pid]/exe` to get the executable path
+2. Apply `exeprefix` filters to determine if the exe should be tracked
+3. Check if total mapped size meets `minsize` threshold (default 2 MB)
+4. Record the exe as "seen" and mark it as running
+
+### Memory Mapping
+
+For each process, the scanner:
+
+1. Reads `/proc/[pid]/maps` to discover all memory-mapped files
+2. Applies `mapprefix` filters to determine which maps to track
+3. Records each map segment with:
+   - File path
+   - Offset within the file
+   - Length of the mapping
+   - Timestamp
+
+### Path Sanitization
+
+The scanner filters out:
+
+- Paths with `(deleted)` marker
+- Non-absolute paths
+- Prelinked paths (splits on `.#prelink#.`)
+
+See `procfs_scanner.rs:15-25` for details.
+
+## Memory Budget Management
+
+preload-rs carefully manages how much memory to use for prefetching to avoid degrading system performance.
+
+### Budget Formula
+
+The available budget is calculated as a weighted sum:
+
+```
+budget = (memtotal% * total_memory) + 
+         (memfree% * free_memory) + 
+         (memcached% * cached_memory)
+```
+
+Default policy (`model.memory`):
+
+- `memtotal = -10`: Subtract 10% of total memory (acts as a safety reserve)
+- `memfree = 50`: Use 50% of currently free memory
+- `memcached = 0`: Don't consider cached memory
+
+Each percentage is clamped to `-100..=100`.
+
+### Greedy Planning
+
+The planner (`planner.rs:79-165`):
+
+1. Sorts maps by prediction score (highest first)
+2. Greedily selects maps while budget remains
+3. Stops when budget is exhausted
+4. Never exceeds the memory budget
+
+<Warning>
+If your memory budget is too aggressive, you may cause memory pressure and trigger swapping, which defeats the purpose of preload. Start conservative and monitor system behavior.
+</Warning>
+
+## Active Window and Pruning
+
+The `active_window` setting (default 6 hours) controls how long executables are considered "active":
+
+- Executables not seen within the window are pruned from the model
+- Markov edges are only created/maintained for executables in the active set
+- This prevents the model from growing unbounded
+- Focuses prediction on recently-used applications
+
+See `active_set.rs` for implementation details.
+
+## Exponential Decay
+
+preload-rs uses exponential smoothing to adapt to changing patterns. You can configure decay using either:
+
+### Option 1: Half-life (Recommended)
+
+```toml
+[model]
+half_life = 3600  # 1 hour
+```
+
+Half-life is the time it takes for a weight to decay to 50% of its original value. The decay factor is calculated as:
+
+```
+decay_factor = ln(2) / half_life_seconds
+```
+
+### Option 2: Direct Decay Factor
+
+```toml
+[model]
+decay = 0.01  # per second
+```
+
+Direct decay factor (ignored if `half_life` is set). Smaller values mean slower decay and longer memory of past patterns.
+
+## Summary
+
+preload-rs works by:
+
+1. **Scanning** `/proc` every cycle to discover running processes and their memory maps
+2. **Filtering** executables and maps based on prefix rules and size thresholds
+3. **Building** a Markov graph capturing correlations between applications
+4. **Predicting** which executables are likely to be needed next
+5. **Planning** which files to prefetch within memory budget constraints
+6. **Prefetching** those files using `posix_fadvise(WILLNEED)` with controlled concurrency
+
+This adaptive approach means preload-rs gets better over time as it learns your workflow patterns.

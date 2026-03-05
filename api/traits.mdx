@@ -1,0 +1,370 @@
+---
+title: 'Core Traits'
+description: 'Public trait interfaces for implementing custom preload-rs components'
+---
+
+## Overview
+
+preload-rs defines several core traits that allow you to implement custom components for the preload pipeline. All traits are designed to be thread-safe (`Send + Sync`) and can be used with dependency injection via the `Services` struct.
+
+## Scanner
+
+Scans the system to observe running processes and their memory mappings.
+
+<ParamField path="scan" type="fn(&mut self, time: u64, scan_id: u64) -> Result<Observation, Error>">
+  Scan the system and return an ordered observation event stream.
+  
+  **Parameters:**
+  - `time`: Current logical time in seconds
+  - `scan_id`: Unique identifier for this scan operation
+  
+  **Returns:** `Observation` containing a sequence of `ObservationEvent` items
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::observation::{Scanner, Observation, ObservationEvent};
+use orchestrator::error::Error;
+
+struct StaticScanner {
+    observation: Observation,
+}
+
+impl Scanner for StaticScanner {
+    fn scan(&mut self, _time: u64, _scan_id: u64) -> Result<Observation, Error> {
+        Ok(self.observation.clone())
+    }
+}
+```
+
+**Built-in Implementation:** [`ProcfsScanner`](/api/crates#procfsscanner) - Scans `/proc` filesystem on Linux
+
+Source: [observation/mod.rs:18-21](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/mod.rs#L18-L21)
+
+---
+
+## AdmissionPolicy
+
+Determines which executables and memory maps are eligible for tracking and prefetching.
+
+<ParamField path="allow_exe" type="fn(&self, path: &Path) -> bool">
+  Determine whether an exe path is eligible for tracking.
+</ParamField>
+
+<ParamField path="allow_map" type="fn(&self, path: &Path) -> bool">
+  Determine whether a map path is eligible for tracking.
+</ParamField>
+
+<ParamField path="decide" type="fn(&self, candidate: &CandidateExe) -> AdmissionDecision">
+  Decide whether a candidate exe should be admitted into the model.
+  
+  **Returns:** `AdmissionDecision` with one of:
+  - `Accept { completeness: Completeness }` - Accept with Full or Partial completeness
+  - `Reject { reason: RejectReason }` - Reject with reason (TooSmall, ExePrefixDenied, etc.)
+  - `Defer` - Postpone decision
+</ParamField>
+
+<ParamField path="stats" type="fn(&self) -> Option<AdmissionPolicyStats>">
+  Optional stats for diagnostics. Returns cache hit/miss rates and other metrics.
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::observation::{AdmissionPolicy, AdmissionDecision, Completeness};
+use std::path::Path;
+
+struct CustomPolicy {
+    min_size: u64,
+}
+
+impl AdmissionPolicy for CustomPolicy {
+    fn allow_exe(&self, path: &Path) -> bool {
+        path.starts_with("/usr/bin")
+    }
+
+    fn allow_map(&self, path: &Path) -> bool {
+        path.ends_with(".so")
+    }
+
+    fn decide(&self, candidate: &orchestrator::observation::CandidateExe) -> AdmissionDecision {
+        if candidate.total_size < self.min_size {
+            return AdmissionDecision::Reject { 
+                reason: orchestrator::observation::RejectReason::TooSmall 
+            };
+        }
+        AdmissionDecision::Accept { 
+            completeness: Completeness::Full 
+        }
+    }
+}
+```
+
+**Built-in Implementation:** [`DefaultAdmissionPolicy`](/api/crates#defaultadmissionpolicy) - Configurable prefix matching with LRU cache
+
+Source: [observation/admission.rs:32-43](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/admission.rs#L32-L43)
+
+---
+
+## ModelUpdater
+
+Updates the internal Markov model based on observations and admission decisions.
+
+<ParamField path="apply" type="fn(&mut self, stores: &mut Stores, observation: &Observation, policy: &dyn AdmissionPolicy) -> Result<ModelDelta, Error>">
+  Apply an observation to update the model stores.
+  
+  **Parameters:**
+  - `stores`: Mutable reference to the model's data stores
+  - `observation`: The observation event stream from scanning
+  - `policy`: Admission policy for filtering candidates
+  
+  **Returns:** `ModelDelta` containing lists of new exes, maps, edges, and state changes
+</ParamField>
+
+### ModelDelta Structure
+
+```rust
+pub struct ModelDelta {
+    pub new_exes: Vec<ExeKey>,
+    pub new_maps: Vec<MapKey>,
+    pub new_edges: Vec<(ExeKey, ExeKey)>,
+    pub running_now: Vec<ExeKey>,
+    pub stopped_now: Vec<ExeKey>,
+    pub rejected: Vec<(ExeKey, RejectReason)>,
+    pub partial_exes: Vec<ExeKey>,
+}
+```
+
+**Built-in Implementation:** [`DefaultModelUpdater`](/api/crates#defaultmodelupdater) - Lazy Markov model with exponential decay
+
+Source: [observation/model_updater.rs:24-31](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/observation/model_updater.rs#L24-L31)
+
+---
+
+## Predictor
+
+Produces probability scores for executables and memory maps based on the current model state.
+
+<ParamField path="predict" type="fn(&self, stores: &Stores) -> Prediction">
+  Produce exe and map scores for the next cycle.
+  
+  **Returns:** `Prediction` containing:
+  - `exe_scores: HashMap<ExeId, f32>` - Probability each exe will be needed
+  - `map_scores: HashMap<MapId, f32>` - Probability each map will be needed
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::prediction::{Predictor, Prediction, MarkovPredictor};
+use orchestrator::stores::Stores;
+use config::Config;
+
+// Use the built-in Markov predictor
+let config = Config::default();
+let predictor = MarkovPredictor::new(&config);
+let mut stores = Stores::default();
+
+let prediction = predictor.predict(&stores);
+for (exe_id, score) in prediction.exe_scores {
+    println!("Exe {:?} has score {}", exe_id, score);
+}
+```
+
+**Built-in Implementation:** [`MarkovPredictor`](/api/crates#markovpredictor) - Continuous-time Markov chain predictor with optional correlation
+
+Source: [prediction/predictor.rs:9-12](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prediction/predictor.rs#L9-L12)
+
+---
+
+## PrefetchPlanner
+
+Creates an optimal prefetch plan from prediction scores within memory budget constraints.
+
+<ParamField path="plan" type="fn(&self, prediction: &Prediction, stores: &Stores, memstat: &MemStat) -> PrefetchPlan">
+  Create a prefetch plan from prediction scores and memory stats.
+  
+  **Parameters:**
+  - `prediction`: Probability scores from the Predictor
+  - `stores`: Current model state
+  - `memstat`: Current memory statistics (total, free, cached)
+  
+  **Returns:** `PrefetchPlan` with selected maps and budget info
+</ParamField>
+
+### PrefetchPlan Structure
+
+```rust
+pub struct PrefetchPlan {
+    pub maps: Vec<MapId>,           // Ordered list of maps to prefetch
+    pub total_bytes: u64,            // Total bytes to prefetch
+    pub budget_bytes: u64,           // Available memory budget
+}
+```
+
+**Built-in Implementation:** [`GreedyPrefetchPlanner`](/api/crates#greedyprefetchplanner) - Greedy selection with configurable sort strategies (Path, Block, Inode)
+
+Source: [prefetch/planner.rs:15-18](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/planner.rs#L15-L18)
+
+---
+
+## Prefetcher
+
+Executes the prefetch plan by issuing I/O hints to the operating system.
+
+<ParamField path="execute" type="async fn(&self, plan: &PrefetchPlan, stores: &Stores) -> PrefetchReport">
+  Execute the prefetch plan (side effects only).
+  
+  **Parameters:**
+  - `plan`: The prefetch plan to execute
+  - `stores`: Model stores for resolving map IDs to paths
+  
+  **Returns:** `PrefetchReport` with execution statistics
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::prefetch::{Prefetcher, PrefetchPlan, PrefetchReport};
+use orchestrator::stores::Stores;
+use async_trait::async_trait;
+
+#[derive(Debug, Default)]
+pub struct NoopPrefetcher;
+
+#[async_trait]
+impl Prefetcher for NoopPrefetcher {
+    async fn execute(&self, _plan: &PrefetchPlan, _stores: &Stores) -> PrefetchReport {
+        PrefetchReport::default()
+    }
+}
+```
+
+**Built-in Implementations:**
+- [`PosixFadvisePrefetcher`](/api/crates#posixfadviseprefetcher) - Uses `posix_fadvise(WILLNEED)` with concurrent I/O
+- [`NoopPrefetcher`](/api/crates#noopprefetcher) - No-op for testing and dry runs
+
+Source: [prefetch/prefetcher.rs:12-16](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/prefetch/prefetcher.rs#L12-L16)
+
+---
+
+## StateRepository
+
+Handles persistence and loading of the preload model state.
+
+<ParamField path="load" type="async fn(&self) -> Result<StoresSnapshot, Error>">
+  Load a snapshot from persistence.
+  
+  **Returns:** `StoresSnapshot` containing model metadata and state data (exes, maps, markov edges)
+</ParamField>
+
+<ParamField path="save" type="async fn(&self, snapshot: &StoresSnapshot) -> Result<(), Error>">
+  Persist a snapshot.
+  
+  **Parameters:**
+  - `snapshot`: Complete snapshot of stores to persist
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::persistence::{StateRepository, StoresSnapshot, SqliteRepository};
+use std::path::PathBuf;
+
+#[tokio::main]
+async fn main() {
+    let db_path = PathBuf::from("/var/lib/preload-rs/state.db");
+    let repo = SqliteRepository::new(db_path).await.unwrap();
+    
+    // Load existing state
+    let snapshot = repo.load().await.unwrap();
+    println!("Loaded {} exes", snapshot.state.exes.len());
+    
+    // Save updated state
+    repo.save(&snapshot).await.unwrap();
+}
+```
+
+**Built-in Implementations:**
+- [`SqliteRepository`](/api/crates#sqliterepository) - SQLite-backed persistence with WAL mode
+- [`NoopRepository`](/api/crates#nooprepository) - No-op for stateless operation
+
+Source: [persistence/repo.rs:15-21](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/persistence/repo.rs#L15-L21)
+
+---
+
+## Clock
+
+Abstraction for time operations to enable testing with simulated time.
+
+<ParamField path="now" type="fn(&self) -> Instant">
+  Returns the current instant.
+</ParamField>
+
+<ParamField path="sleep" type="async fn(&self, duration: Duration)">
+  Sleep for the specified duration.
+</ParamField>
+
+### Implementation Example
+
+```rust
+use orchestrator::clock::{Clock, SystemClock};
+use std::time::{Duration, Instant};
+
+#[async_trait::async_trait]
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    async fn sleep(&self, duration: Duration) {
+        tokio::time::sleep(duration).await;
+    }
+}
+```
+
+**Built-in Implementation:** [`SystemClock`](/api/crates#systemclock) - Uses system time and tokio sleep
+
+Source: [clock.rs:5-9](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/src/clock.rs#L5-L9)
+
+---
+
+## Composing Services
+
+All traits are composed together via the `Services` struct:
+
+```rust
+use orchestrator::{PreloadEngine, Services};
+use orchestrator::clock::SystemClock;
+use orchestrator::observation::{ProcfsScanner, DefaultAdmissionPolicy, DefaultModelUpdater};
+use orchestrator::prediction::MarkovPredictor;
+use orchestrator::prefetch::{GreedyPrefetchPlanner, PosixFadvisePrefetcher};
+use orchestrator::persistence::SqliteRepository;
+use config::Config;
+
+#[tokio::main]
+async fn main() {
+    let config = Config::default();
+    let db_path = std::path::PathBuf::from("/var/lib/preload-rs/state.db");
+    
+    let services = Services {
+        scanner: Box::new(ProcfsScanner::new()),
+        admission: Box::new(DefaultAdmissionPolicy::new(&config)),
+        updater: Box::new(DefaultModelUpdater::new(&config)),
+        predictor: Box::new(MarkovPredictor::new(&config)),
+        planner: Box::new(GreedyPrefetchPlanner::new(&config)),
+        prefetcher: Box::new(PosixFadvisePrefetcher::new(16)),
+        repo: Box::new(SqliteRepository::new(db_path).await.unwrap()),
+        clock: Box::new(SystemClock),
+    };
+    
+    let mut engine = PreloadEngine::new(config, services).await.unwrap();
+    
+    // Run a single cycle
+    let report = engine.tick().await.unwrap();
+    println!("Prefetched {} bytes", report.prefetch_report.total_bytes);
+}
+```
+
+See the [Engine Pipeline test](https://github.com/your-org/preload-rs/blob/main/crates/orchestrator/tests/engine_pipeline.rs) for a complete working example.

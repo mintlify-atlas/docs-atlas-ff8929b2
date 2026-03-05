@@ -1,0 +1,176 @@
+---
+title: Architecture Overview
+description: System architecture and runtime design of preload-rs
+---
+
+## System Architecture
+
+preload-rs is organized as a workspace of three Rust crates with clear separation of concerns:
+
+### Crate Organization
+
+- **`crates/cli`** — Binary entrypoint and CLI parsing. Handles signal conversion to control events.
+- **`crates/config`** — Configuration types with TOML loading and merging logic.
+- **`crates/orchestrator`** — Core engine containing model, prediction, planning, and persistence logic.
+
+All crates enforce `#![forbid(unsafe_code)]` for memory safety guarantees.
+
+<Note>
+The orchestrator is designed around replaceable components following trait-based contracts, making the system testable and extensible.
+</Note>
+
+## Runtime Pipeline
+
+The engine runs in cycles, each following a strict five-phase pipeline defined in `crates/orchestrator/src/engine.rs:89-163`:
+
+```mermaid
+graph LR
+    A[Scan] --> B[Update]
+    B --> C[Predict]
+    C --> D[Plan]
+    D --> E[Prefetch]
+    E --> A
+```
+
+### Pipeline Phases
+
+#### 1. Scan
+Collects observation events by reading `/proc` to discover:
+- Running processes (executables)
+- Memory-mapped file regions (maps)
+- System memory statistics
+
+**Implementation:** `ProcfsScanner` in `crates/orchestrator/src/observation/procfs_scanner.rs`
+
+#### 2. Update
+Applies observations to the in-memory model:
+- Admits or rejects executables based on policy
+- Updates executable and map stores
+- Maintains the active set (recently-seen executables)
+- Creates and updates lazy Markov edges between active executables
+- Tracks running time statistics
+- Updates Markov transition probabilities with exponential decay
+
+**Implementation:** `DefaultModelUpdater` in `crates/orchestrator/src/observation/model_updater.rs:48-210`
+
+#### 3. Predict
+Computes probability scores for each executable and map being needed in the next cycle using the Markov model.
+
+**Implementation:** `MarkovPredictor` in `crates/orchestrator/src/prediction/predictor.rs:71-132`
+
+See [Markov Model](/architecture/markov-model) for detailed prediction algorithm.
+
+#### 4. Plan
+Selects which maps to prefetch within a memory budget by:
+- Sorting maps by score (descending)
+- Accumulating maps until budget is exhausted
+- Respecting system memory constraints
+
+**Implementation:** `GreedyPrefetchPlanner` in `crates/orchestrator/src/prefetch/`
+
+#### 5. Prefetch
+Executes the prefetch plan by calling `posix_fadvise(POSIX_FADV_WILLNEED)` on selected file regions.
+
+**Implementation:** `PosixFadvisePrefetcher` in `crates/orchestrator/src/prefetch/`
+
+## Engine Loop
+
+The engine exposes two execution modes:
+
+### Single Tick
+```rust
+PreloadEngine::tick() -> Result<TickReport, Error>
+```
+Runs one complete pipeline cycle without sleeping. Returns a report with scan ID, model delta, prediction summary, prefetch report, and memory statistics.
+
+`crates/orchestrator/src/engine.rs:88`
+
+### Continuous Run
+```rust
+PreloadEngine::run_until(cancel, control_rx) -> Result<(), Error>
+```
+Runs continuous cycles with:
+- Sleep pacing between cycles (configured `model.cycle`)
+- Periodic autosave (configured `autosave_interval`)
+- Control event handling (reload, dump, save)
+- Graceful shutdown on cancellation
+
+`crates/orchestrator/src/engine.rs:165-215`
+
+## Runtime Control
+
+Signals are handled in the CLI layer (`crates/cli/src/signals.rs`) and converted to `ControlEvent` messages:
+
+| Signal | Event | Action |
+|--------|-------|--------|
+| **SIGHUP** | `Reload` | Reload config and rebuild admission/updater/predictor/planner/prefetcher |
+| **SIGUSR1** | `DumpStatus` | Log current config and state summary (exe/map/edge/active counts) |
+| **SIGUSR2** | `SaveNow` | Persist state immediately to SQLite |
+| **Ctrl-C** | shutdown | Save state if `save_on_shutdown` is enabled, then exit |
+
+`crates/orchestrator/src/engine.rs:40-44`
+
+## Core Domain Types
+
+### Stores
+The `Stores` struct is the central in-memory state container:
+
+```rust
+pub struct Stores {
+    pub exes: ExeStore,           // Executable metadata by ID
+    pub maps: MapStore,           // File map segments by ID
+    pub exe_maps: ExeMapIndex,    // Bidirectional exe↔map index
+    pub markov: MarkovGraph,      // Markov edges for prediction
+    pub active: ActiveSet,        // Recently-seen executables
+    pub model_time: u64,          // Current logical time (seconds)
+    pub last_accounting_time: u64 // Last time stats were updated
+}
+```
+
+`crates/orchestrator/src/stores/mod.rs:20-29`
+
+### Key Types
+
+- **`ExeKey`** — Stable identifier for an executable (path)
+- **`MapSegment`** — A memory-mapped file region (path, offset, length, update_time)
+- **`MarkovEdge`** — Markov chain statistics for executable transitions
+- **`ActiveSet`** — Time-windowed set of recently-seen executables
+
+## Trait Contracts
+
+All core behavior is abstracted behind small traits for testability and extensibility:
+
+| Trait | Purpose | Default Implementation |
+|-------|---------|----------------------|
+| `Scanner` | Produces observation event streams | `ProcfsScanner` |
+| `AdmissionPolicy` | Decides which exes/maps enter model | `DefaultAdmissionPolicy` |
+| `ModelUpdater` | Mutates stores given observations | `DefaultModelUpdater` |
+| `Predictor` | Produces exe/map probability scores | `MarkovPredictor` |
+| `PrefetchPlanner` | Converts scores to prefetch plan | `GreedyPrefetchPlanner` |
+| `Prefetcher` | Executes prefetch plan | `PosixFadvisePrefetcher` |
+| `StateRepository` | Persists/loads snapshots | `SqliteRepository` |
+| `Clock` | Abstracts time/sleep for tests | `SystemClock` |
+
+`crates/orchestrator/src/engine.rs:20-29`
+
+## Design Principles
+
+### Lazy Markov Edges
+Markov edges exist only among executables in the **active set** (recently seen within `active_window`). This prevents O(N²) growth as the number of tracked executables increases.
+
+Missing edges are treated as neutral evidence (probability = 0) during prediction.
+
+`DEVELOPING.md:58-60`
+
+### Snapshot-Based Persistence
+State is persisted as complete snapshots keyed by external identifiers (file paths), not internal IDs. This allows the system to restart and rebuild its internal representation from stable keys.
+
+See [Persistence](/architecture/persistence) for details.
+
+### No Unsafe Code
+All crates forbid `unsafe` code, ensuring memory safety and eliminating entire classes of security vulnerabilities.
+
+## Related Topics
+
+- [Markov Model](/architecture/markov-model) — Detailed prediction algorithm
+- [Persistence](/architecture/persistence) — SQLite schema and snapshot model

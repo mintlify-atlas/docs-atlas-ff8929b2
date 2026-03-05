@@ -1,80 +1,389 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Get started with preload-rs in minutes"
 ---
 
-## Get started in three steps
+## Overview
 
-Get your documentation site running locally and make your first customization.
+This guide will help you set up and run preload-rs for the first time. By the end, you'll have preload-rs monitoring your system and prefetching applications.
 
-### Step 1: Set up your local environment
+<Info>
+  Make sure you've completed the [installation](/installation) before starting this guide.
+</Info>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Quick Start Steps
+
+<Steps>
+  <Step title="Create a configuration file">
+    Copy the example configuration to get started:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    mkdir -p ~/.config/preload-rs
+    cp docs/config.example.toml ~/.config/preload-rs/config.toml
+    ```
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    <Accordion title="Configuration file locations">
+      preload-rs searches for configuration in this order:
+      
+      1. `/etc/preload-rs/config.toml` (system-wide)
+      2. `/etc/preload-rs/config.d/*.toml` (system-wide drop-ins)
+      3. `$XDG_CONFIG_HOME/preload-rs/config.toml` (user config)
+      4. `./config.toml` (current directory)
+      5. Custom path via `--config` flag
+      
+      Later files override earlier ones.
+    </Accordion>
+  </Step>
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+  <Step title="Review the configuration">
+    Open the configuration file and review key settings:
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
+    ```toml
+    [model]
+    # Observation/prediction cycle length in seconds
+    cycle = 20
+    # Whether to use correlation in prediction
+    use_correlation = true
+    # Minimum total mapped bytes to track an executable
+    minsize = 2000000
+    
+    [model.memory]
+    # Memory budget policy (percentages)
+    memtotal = -10
+    memfree = 50
+    memcached = 0
+    
+    [system]
+    # Enable scanning and prediction
+    doscan = true
+    dopredict = true
+    # Autosave interval in seconds
+    autosave = 3600
+    ```
+    
+    <Tip>
+      The default configuration is production-ready. You can start with it and tune later based on your system's behavior.
+    </Tip>
+  </Step>
+
+  <Step title="Run preload-rs">
+    Start the daemon with basic logging:
+    
+    <CodeGroup>
+    ```bash From build directory
+    cargo run -p cli
+    ```
+    
+    ```bash Installed binary
+    preload-rs
+    ```
+    
+    ```bash With verbose logging
+    preload-rs -v
+    ```
+    
+    ```bash With trace-level logging
+    preload-rs -vvv
+    ```
+    </CodeGroup>
+    
+    <Note>
+      Use `-v` for debug logs, `-vv` or `-vvv` for trace-level output during initial testing.
+    </Note>
+  </Step>
+
+  <Step title="Verify it's working">
+    You should see output indicating the daemon is running:
+    
+    ```bash
+    INFO preload_engine: loaded state from database
+    INFO preload_engine: starting run loop cycle=20s
+    INFO preload_engine: tick completed exes_tracked=42 maps_admitted=1203
+    ```
+    
+    The daemon will now:
+    - Scan `/proc` to observe running processes
+    - Build a prediction model of application correlations
+    - Prefetch likely-to-run applications into memory
+  </Step>
+</Steps>
+
+## Configuration Deep Dive
+
+### Memory Budget Policy
+
+Control how much memory preload-rs can use for prefetching:
+
+```toml
+[model.memory]
+memtotal = -10   # Subtract 10% of total RAM from budget
+memfree = 50     # Add 50% of free RAM to budget
+memcached = 0    # Don't consider cached memory
+```
+
+<Accordion title="How memory budget works">
+  The budget is calculated as:
+  
+  ```
+  budget = (memtotal × total_ram) + (memfree × free_ram) + (memcached × cached_ram)
+  ```
+  
+  Example: On a 16GB system with 8GB free:
+  - `memtotal = -10` → subtract 1.6GB
+  - `memfree = 50` → add 4GB
+  - Final budget: 2.4GB for prefetching
+  
+  This ensures preload-rs only uses memory when it's available.
 </Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+### Filtering Executables and Files
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+Control which paths are tracked and prefetched:
 
-### Step 3: Go live
+```toml
+[system]
+# Executable path prefixes ("!" means deny)
+exeprefix = ["!/usr/sbin/", "!/usr/local/sbin/", "/usr/", "!/"]
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
+# Mapped file prefixes ("!" means deny)
+mapprefix = ["/usr/", "/lib/", "/var/cache/", "!/"]
+```
+
+<Warning>
+  The longest matching prefix wins. Order matters!
+  
+  - `"/usr/bin/"` allows `/usr/bin/firefox`
+  - `"!/usr/sbin/"` denies `/usr/sbin/service`
+  - Final `"!/"` denies everything else not explicitly allowed
+</Warning>
+
+### Prefetch Optimization
+
+```toml
+[system]
+# Sort strategy: none | path | block | inode
+sortstrategy = "block"
+
+# Worker concurrency (omit for auto = CPU cores)
+prefetch_concurrency = 8
+
+# Cache admission rejections to reduce overhead
+policy_cache_ttl = 300
+policy_cache_capacity = 1024
+```
+
+<Tip>
+  Use `sortstrategy = "block"` for HDDs to minimize seek time. SSDs work well with any strategy.
+</Tip>
+
+### State Persistence
+
+```toml
+[persistence]
+state_path = "/var/lib/preload-rs/state.db"
+autosave_interval = 120
+save_on_shutdown = true
+```
+
+<Info>
+  The state database stores the Markov model, observed applications, and prediction statistics. It's preserved across restarts.
+</Info>
+
+## Command-Line Options
+
+### Basic Usage
+
+<CodeGroup>
+```bash Custom config file
+preload-rs --config /path/to/config.toml
+```
+
+```bash Config directory
+preload-rs --config-dir /etc/preload-rs/config.d
+```
+
+```bash Custom state database
+preload-rs --state /var/lib/preload-rs/state.db
+```
+</CodeGroup>
+
+### Testing and Debugging
+
+<CodeGroup>
+```bash Run single tick and exit
+preload-rs --once
+```
+
+```bash Observe without prefetching
+preload-rs --no-prefetch
+```
+
+```bash Disable persistence
+preload-rs --no-persist
+```
+
+```bash Maximum verbosity
+preload-rs -vvv
+```
+</CodeGroup>
+
+### All Flags
+
+<Accordion title="Complete flag reference">
+  | Flag | Description |
+  |------|-------------|
+  | `-c, --config FILE` | Path to configuration file |
+  | `--config-dir DIR` | Directory with additional `.toml` files |
+  | `-s, --state FILE` | Override state database path |
+  | `--once` | Run a single tick and exit |
+  | `--no-persist` | Disable persistence entirely |
+  | `--no-prefetch` | Disable prefetch I/O (observe/predict only) |
+  | `-v, --verbose` | Increase log verbosity (`-v`, `-vv`, `-vvv`) |
 </Accordion>
 
-## Next steps
+## Runtime Control with Signals
 
-Now that you have your docs running, explore these key features:
+Control the running daemon using Unix signals:
 
-<CardGroup cols={2}>
+<CodeGroup>
+```bash Reload configuration
+kill -HUP $(pidof preload-rs)
+```
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+```bash Dump status to logs
+kill -USR1 $(pidof preload-rs)
+```
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+```bash Save state immediately
+kill -USR2 $(pidof preload-rs)
+```
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+```bash Graceful shutdown
+kill -INT $(pidof preload-rs)
+# or just Ctrl+C
+```
+</CodeGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  **SIGHUP** reloads the config without restarting. Useful for tuning settings on a live system.
 </Note>
+
+## Example Workflows
+
+### Observe Only (No I/O)
+
+Use this to build a model without doing any prefetching:
+
+```bash
+preload-rs --no-prefetch -v
+```
+
+You'll see logs showing what *would* be prefetched:
+
+```
+INFO prediction: computed scores exes=45 maps=892
+INFO planner: selected maps for prefetch count=156 budget_bytes=2147483648
+INFO prefetcher: skipping prefetch (no-prefetch mode)
+```
+
+### Single-Shot Testing
+
+Run one observation cycle and exit:
+
+```bash
+preload-rs --once -vv
+```
+
+Useful for testing configuration changes without running the full daemon.
+
+### Production Deployment
+
+<Steps>
+  <Step title="Create state directory">
+    ```bash
+    sudo mkdir -p /var/lib/preload-rs
+    sudo chown $(whoami):$(whoami) /var/lib/preload-rs
+    ```
+  </Step>
+  
+  <Step title="Update config">
+    Edit `~/.config/preload-rs/config.toml`:
+    
+    ```toml
+    [persistence]
+    state_path = "/var/lib/preload-rs/state.db"
+    autosave_interval = 120
+    save_on_shutdown = true
+    ```
+  </Step>
+  
+  <Step title="Run as background service">
+    ```bash
+    preload-rs &
+    ```
+    
+    Or create a systemd service for automatic startup.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No config files found">
+    ```
+    WARN config: no config files found; falling back to defaults
+    ```
+    
+    **Solution**: Create a config file at one of the searched locations or use `--config` to specify a path.
+  </Accordion>
+  
+  <Accordion title="No maps admitted">
+    Check your filter rules:
+    
+    1. Verify `minsize` isn't too high (default: 2MB)
+    2. Check `exeprefix` and `mapprefix` rules
+    3. Run with `-vv` to see admission decisions
+    
+    ```bash
+    preload-rs -vv 2>&1 | grep admission
+    ```
+  </Accordion>
+  
+  <Accordion title="No state database">
+    ```
+    WARN persistence: no persistence path provided; using in-memory state only
+    ```
+    
+    **Solution**: Add `state_path` to config or use `--state` flag:
+    
+    ```bash
+    preload-rs --state ~/.local/share/preload-rs/state.db
+    ```
+  </Accordion>
+  
+  <Accordion title="Permission denied on prefetch">
+    preload-rs uses `posix_fadvise` which requires read access to files.
+    
+    **Solution**: This is normal for some system files. The daemon will log warnings but continue running. Not a critical issue.
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration Reference" icon="gear" href="/usage/configuration">
+    Detailed explanation of all config options
+  </Card>
+  
+  <Card title="Architecture Overview" icon="code" href="/architecture/overview">
+    Extend and customize preload-rs
+  </Card>
+  
+  <Card title="API Reference" icon="book" href="/api/traits">
+    Explore the trait system
+  </Card>
+  
+  <Card title="Tuning Performance" icon="gauge" href="/guides/tuning-performance">
+    Optimize for your system
+  </Card>
+</CardGroup>

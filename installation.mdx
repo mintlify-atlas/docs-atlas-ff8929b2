@@ -1,0 +1,199 @@
+---
+title: "Installation"
+description: "Build and install preload-rs from source"
+---
+
+## Overview
+
+preload-rs is a daemon process that prefetches binary files and shared libraries to achieve faster application startup times. It builds a Markov-based probabilistic model to predict which applications you're likely to run next.
+
+<Note>
+  preload-rs is designed specifically for Linux systems and requires access to `/proc` filesystem.
+</Note>
+
+## System Requirements
+
+<Steps>
+  <Step title="Linux Operating System">
+    preload-rs requires a Linux system with:
+    - `/proc` filesystem (procfs)
+    - Support for `posix_fadvise` system call
+  </Step>
+  
+  <Step title="Rust Toolchain">
+    Install Rust using rustup:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    
+    <Info>
+      Rust 2024 edition is required. The project uses Cargo workspace with multiple crates.
+    </Info>
+  </Step>
+
+  <Step title="SQLite Development Libraries">
+    Required for state persistence:
+    
+    <CodeGroup>
+    ```bash Ubuntu/Debian
+    sudo apt-get install libsqlite3-dev
+    ```
+    
+    ```bash Fedora/RHEL
+    sudo dnf install sqlite-devel
+    ```
+    
+    ```bash Arch Linux
+    sudo pacman -S sqlite
+    ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Building from Source
+
+### Clone the Repository
+
+```bash
+git clone https://github.com/arunanshub/preload-rs.git
+cd preload-rs
+```
+
+### Build with Cargo
+
+<CodeGroup>
+```bash Debug Build
+cargo build --workspace
+```
+
+```bash Release Build (Recommended)
+cargo build --workspace --release
+```
+</CodeGroup>
+
+<Tip>
+  The release build enables LTO (Link-Time Optimization), strips debug symbols, and sets `panic = "abort"` for optimal performance.
+</Tip>
+
+### Build Configuration
+
+The project uses a Cargo workspace with three crates:
+
+<Accordion title="Workspace Structure">
+  ```toml
+  [workspace]
+  resolver = "2"
+  members = [
+      "crates/cli",
+      "crates/config",
+      "crates/orchestrator",
+  ]
+  ```
+  
+  - **cli**: Binary entrypoint and command-line interface
+  - **config**: Configuration management and TOML loading
+  - **orchestrator**: Core engine, model, prediction, and persistence
+</Accordion>
+
+### Verify the Build
+
+Check that the binary was built successfully:
+
+```bash
+./target/release/cli --version
+```
+
+## Optional Development Setup
+
+<Warning>
+  Only required if you plan to modify the codebase or run integration tests.
+</Warning>
+
+### Install sqlx-cli
+
+For database migrations during development:
+
+```bash
+cargo install sqlx-cli --no-default-features --features sqlite
+```
+
+### Create Development Database
+
+<Steps>
+  <Step title="Create .env file">
+    ```bash
+    echo 'DATABASE_URL="sqlite://./dev.db"' > .env
+    ```
+  </Step>
+  
+  <Step title="Initialize database">
+    ```bash
+    sqlx database create
+    sqlx migrate run --source crates/orchestrator/migrations
+    ```
+  </Step>
+  
+  <Step title="Prepare offline data">
+    When making SQL changes:
+    
+    ```bash
+    cargo sqlx prepare --workspace
+    ```
+  </Step>
+</Steps>
+
+## Installation Locations
+
+<Accordion title="Recommended installation paths">
+  <CodeGroup>
+  ```bash System-wide installation
+  sudo cp target/release/cli /usr/local/bin/preload-rs
+  sudo chmod +x /usr/local/bin/preload-rs
+  ```
+  
+  ```bash User installation
+  mkdir -p ~/.local/bin
+  cp target/release/cli ~/.local/bin/preload-rs
+  chmod +x ~/.local/bin/preload-rs
+  ```
+  </CodeGroup>
+  
+  <Note>
+    Make sure `~/.local/bin` is in your `PATH` if using user installation.
+  </Note>
+</Accordion>
+
+## Running Tests
+
+Verify your installation by running the test suite:
+
+<CodeGroup>
+```bash All tests
+cargo test --workspace --all-features
+```
+
+```bash Format check
+cargo fmt --check --all
+```
+
+```bash Linting
+cargo clippy --all-targets -- -D warnings
+```
+</CodeGroup>
+
+<Info>
+  The test suite includes integration tests that scan real `/proc` entries, so they must run on Linux.
+</Info>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Learn how to configure and run preload-rs
+  </Card>
+  
+  <Card title="Architecture Overview" icon="code" href="/architecture/overview">
+    Learn about the internal architecture
+  </Card>
+</CardGroup>

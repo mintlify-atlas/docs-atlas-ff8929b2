@@ -1,0 +1,570 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for preload-rs
+---
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="No config files found warning">
+    
+    ### Symptom
+    
+    You see a warning message about no configuration files being found, and preload-rs uses default settings.
+    
+    ### Cause
+    
+    preload-rs searches for configuration files in standard locations but didn't find any.
+    
+    ### Solution
+    
+    1. Create a configuration file:
+    
+    ```bash
+    mkdir -p ~/.config/preload-rs
+    cp docs/config.example.toml ~/.config/preload-rs/config.toml
+    ```
+    
+    2. Or specify a config file explicitly:
+    
+    ```bash
+    preload-rs --config /path/to/config.toml
+    ```
+    
+    3. Or use the defaults (preload-rs will run fine without a config file)
+    
+    ### Search Order
+    
+    preload-rs looks for config files in this order:
+    
+    1. `/etc/preload-rs/config.toml`
+    2. `/etc/preload-rs/config.d/*.toml`
+    3. `$XDG_CONFIG_HOME/preload-rs/config.toml` (or `~/.config/preload-rs/config.toml`)
+    4. `./config.toml` (current directory)
+    
+  </Accordion>
+
+  <Accordion title="No executables are being tracked">
+    
+    ### Symptom
+    
+    Logs show "no maps admitted" or prediction scores are all zero.
+    
+    ### Possible Causes
+    
+    #### 1. `minsize` threshold too high
+    
+    **Check**: Are your applications smaller than the `minsize` threshold?
+    
+    ```toml
+    [model]
+    minsize = 2000000  # 2 MB default
+    ```
+    
+    **Solution**: Lower the threshold:
+    
+    ```toml
+    [model]
+    minsize = 1000000  # 1 MB
+    ```
+    
+    #### 2. `exeprefix` rules too restrictive
+    
+    **Check**: Do your executable paths match the allowed prefixes?
+    
+    ```toml
+    [system]
+    exeprefix = ["!/usr/sbin/", "!/usr/local/sbin/", "/usr/", "!/"]
+    ```
+    
+    **Solution**: Add the path where your applications are installed:
+    
+    ```toml
+    exeprefix = [
+      "!/usr/sbin/",
+      "!/usr/local/sbin/",
+      "/usr/",
+      "/opt/",          # Add this for apps in /opt
+      "/home/user/bin/", # Add this for local apps
+      "!/"
+    ]
+    ```
+    
+    #### 3. Applications not running
+    
+    **Check**: Are the applications you want tracked actually running?
+    
+    **Solution**: Run the applications, wait for a scan cycle, then check logs with `-vv`.
+    
+    ### Debugging
+    
+    Run with verbose logging:
+    
+    ```bash
+    preload-rs -vv
+    ```
+    
+    Look for messages about:
+    - "exe admitted" or "exe rejected"
+    - Rejection reasons (minsize, prefix mismatch)
+    
+  </Accordion>
+
+  <Accordion title="No shared libraries are being prefetched">
+    
+    ### Symptom
+    
+    Executables are tracked but no memory maps appear in predictions.
+    
+    ### Cause
+    
+    The `mapprefix` rules are rejecting library paths.
+    
+    ### Solution
+    
+    Check and adjust `mapprefix`:
+    
+    ```toml
+    [system]
+    mapprefix = [
+      "/usr/",       # System libraries
+      "/lib/",       # More libraries
+      "/lib64/",     # 64-bit libraries
+      "/var/cache/", # Cached files
+      "!/"
+    ]
+    ```
+    
+    Common library locations:
+    - `/usr/lib/`
+    - `/usr/lib64/`
+    - `/lib/`
+    - `/lib64/`
+    - `/usr/local/lib/`
+    
+    ### Debugging
+    
+    Enable verbose logging and look for "map rejected" messages:
+    
+    ```bash
+    preload-rs -vv 2>&1 | grep -i "map"
+    ```
+    
+  </Accordion>
+
+  <Accordion title="High memory usage / system slowdown">
+    
+    ### Symptom
+    
+    System becomes sluggish, swap usage increases, or applications are killed by OOM.
+    
+    ### Cause
+    
+    Memory policy is too aggressive for your system.
+    
+    ### Solution
+    
+    Make the memory policy more conservative:
+    
+    ```toml
+    [model.memory]
+    memtotal = -25   # Reserve 25% of total memory
+    memfree = 25     # Use only 25% of free memory
+    memcached = 0    # Don't touch cached memory
+    ```
+    
+    ### Emergency: Disable Prefetching
+    
+    If the system is currently struggling:
+    
+    ```bash
+    # Stop preload-rs
+    pkill preload-rs
+    
+    # Or run in observe-only mode
+    preload-rs --no-prefetch
+    ```
+    
+    ### Monitoring
+    
+    Watch memory usage:
+    
+    ```bash
+    # Check every 2 seconds
+    watch -n 2 free -h
+    
+    # Or use htop
+    htop
+    ```
+    
+    Look for:
+    - Swap usage increasing
+    - Free memory staying below 10%
+    - Applications being killed (check `dmesg | grep -i kill`)
+    
+  </Accordion>
+
+  <Accordion title="High disk I/O / system stuttering">
+    
+    ### Symptom
+    
+    Disk activity LED constantly on, applications freeze briefly, high I/O wait.
+    
+    ### Cause
+    
+    Prefetch I/O is overwhelming the disk, especially on HDDs.
+    
+    ### Solutions
+    
+    #### 1. Reduce concurrency (critical for HDDs)
+    
+    ```toml
+    [system]
+    prefetch_concurrency = 1  # Sequential only
+    ```
+    
+    #### 2. Enable block sorting (critical for HDDs)
+    
+    ```toml
+    [system]
+    sortstrategy = "block"
+    ```
+    
+    #### 3. Reduce memory budget
+    
+    Smaller budget = less prefetching = less I/O:
+    
+    ```toml
+    [model.memory]
+    memfree = 30  # Reduced from 50
+    ```
+    
+    #### 4. Increase cycle time
+    
+    Prefetch less often:
+    
+    ```toml
+    [model]
+    cycle = 60  # Once per minute instead of every 20s
+    ```
+    
+    ### Monitoring
+    
+    Check I/O statistics:
+    
+    ```bash
+    # Install sysstat if needed
+    iostat -x 2
+    ```
+    
+    Look for `%util` approaching 100% on your disk device.
+    
+  </Accordion>
+
+  <Accordion title="Permission denied errors for some files">
+    
+    ### Symptom
+    
+    Warnings about failing to prefetch certain files due to permission errors.
+    
+    ### Cause
+    
+    preload-rs runs as your user and can only prefetch files you have read permission for.
+    
+    ### Solution
+    
+    This is usually not a problem:
+    
+    - Files you can't read won't be used by your applications anyway
+    - The daemon continues running and prefetches what it can
+    - Warnings can be safely ignored
+    
+    If you want to prefetch system-wide:
+    
+    ```bash
+    # Run as root (not generally recommended)
+    sudo preload-rs
+    ```
+    
+    <Warning>
+    Running as root allows prefetching all files but increases security risk. Only do this if you understand the implications.
+    </Warning>
+    
+  </Accordion>
+
+  <Accordion title="State database not being saved">
+    
+    ### Symptom
+    
+    preload-rs forgets learned patterns after restart.
+    
+    ### Cause
+    
+    1. Persistence not configured
+    2. `--no-persist` flag used
+    3. State path not writable
+    
+    ### Solution
+    
+    #### Configure state path
+    
+    ```toml
+    [persistence]
+    state_path = "/var/lib/preload-rs/state.db"
+    autosave_interval = 120  # Save every 2 minutes
+    save_on_shutdown = true
+    ```
+    
+    #### Create state directory
+    
+    ```bash
+    # For system-wide installation
+    sudo mkdir -p /var/lib/preload-rs
+    sudo chown $USER:$USER /var/lib/preload-rs
+    
+    # Or for user installation
+    mkdir -p ~/.local/share/preload-rs
+    ```
+    
+    Then update config:
+    
+    ```toml
+    [persistence]
+    state_path = "~/.local/share/preload-rs/state.db"
+    ```
+    
+    #### Check flags
+    
+    Remove `--no-persist` if you're using it.
+    
+  </Accordion>
+
+  <Accordion title="Configuration changes not taking effect">
+    
+    ### Symptom
+    
+    You edited the config file but preload-rs still uses old settings.
+    
+    ### Cause
+    
+    preload-rs reads config on startup and needs to be notified of changes.
+    
+    ### Solution
+    
+    #### Option 1: Reload config with SIGHUP
+    
+    ```bash
+    pkill -HUP preload-rs
+    ```
+    
+    #### Option 2: Restart the daemon
+    
+    ```bash
+    pkill preload-rs
+    preload-rs
+    ```
+    
+    #### Option 3: Test with --once
+    
+    ```bash
+    preload-rs --once
+    ```
+    
+    This runs a single cycle and exits, useful for testing config changes.
+    
+    ### Verify active config
+    
+    Send SIGUSR1 to dump current configuration:
+    
+    ```bash
+    pkill -USR1 preload-rs
+    ```
+    
+    Then check logs for the config dump.
+    
+  </Accordion>
+
+  <Accordion title="Linux-only features or errors on other OS">
+    
+    ### Symptom
+    
+    Errors about `/proc` not existing or `posix_fadvise` not available.
+    
+    ### Cause
+    
+    preload-rs is designed specifically for Linux.
+    
+    ### Solution
+    
+    preload-rs requires:
+    - Linux kernel (for `/proc` filesystem)
+    - `posix_fadvise()` system call
+    - Access to `/proc/[pid]/exe` and `/proc/[pid]/maps`
+    
+    It will not work on:
+    - Windows
+    - macOS
+    - BSD systems (without Linux compatibility layer)
+    
+    For these platforms, look for alternative prefetching solutions specific to those operating systems.
+    
+  </Accordion>
+
+  <Accordion title="Predictions seem inaccurate or random">
+    
+    ### Symptom
+    
+    preload-rs prefetches applications you never use, or misses ones you frequently use.
+    
+    ### Causes and Solutions
+    
+    #### 1. Not enough training data
+    
+    **Solution**: Let preload-rs run for at least 24-48 hours to learn your patterns.
+    
+    #### 2. Correlation disabled
+    
+    **Solution**: Enable correlation (it's on by default):
+    
+    ```toml
+    [model]
+    use_correlation = true
+    ```
+    
+    #### 3. Active window too short
+    
+    If you use applications at different times of day, they may age out:
+    
+    ```toml
+    [model]
+    active_window = 43200  # 12 hours instead of 6
+    ```
+    
+    #### 4. Decay too fast
+    
+    Patterns are being forgotten too quickly:
+    
+    ```toml
+    [model]
+half_life = 7200  # 2 hours instead of default decay
+    ```
+    
+    Or:
+    
+    ```toml
+    [model]
+    decay = 0.005  # Slower decay (smaller number)
+    ```
+    
+    #### 5. Very irregular workflow
+    
+    If your workflow has no pattern, preload may not help much. Consider:
+    - Running in observe-only mode (`--no-prefetch`)
+    - Using manual prefetching tools instead
+    
+  </Accordion>
+</AccordionGroup>
+
+## Debug Workflow
+
+When troubleshooting any issue:
+
+1. **Enable verbose logging**:
+   ```bash
+   preload-rs -vv
+   ```
+
+2. **Run a single cycle**:
+   ```bash
+   preload-rs --once -vv
+   ```
+
+3. **Check what's being scanned**:
+   ```bash
+   preload-rs -vv 2>&1 | grep -E "(ExeSeen|MapSeen|admitted|rejected)"
+   ```
+
+4. **Dump current state**:
+   ```bash
+   pkill -USR1 preload-rs
+   # Then check logs
+   ```
+
+5. **Test config changes**:
+   ```bash
+   # Edit config
+   vim ~/.config/preload-rs/config.toml
+   
+   # Reload
+   pkill -HUP preload-rs
+   
+   # Or test in isolation
+   preload-rs --config ./test-config.toml --once -vv
+   ```
+
+## Getting Help
+
+If you're still stuck:
+
+1. **Check logs** with `-vvv` (maximum verbosity)
+2. **Review config** carefully against defaults
+3. **Test with default config** to isolate custom settings
+4. **Check system resources** (memory, disk I/O, CPU)
+5. **File an issue** with:
+   - preload-rs version
+   - Operating system and kernel version
+   - Configuration file
+   - Relevant logs
+   - Steps to reproduce
+
+## Performance Expectations
+
+### What to Expect
+
+- **CPU usage**: Less than 2% average, brief spikes during scans
+- **Memory overhead**: 10-50 MB for the daemon itself
+- **I/O pattern**: Burst during prefetch, then idle
+- **Startup time improvement**: 20-50% for frequently-used apps after training period
+
+### What NOT to Expect
+
+- Instant startup of all applications
+- Benefits for first-time application launches
+- Improvement for applications launched infrequently
+- Benefits on systems with excessive free RAM (files already cached)
+- Significant improvement on NVMe SSDs with minimal workload
+
+<Note>
+preload-rs works best for:
+- Systems with limited RAM where not everything fits in cache
+- Workflows with repeated patterns
+- HDDs and slower SATA SSDs
+- Applications with many dependencies (browsers, IDEs)
+</Note>
+
+## Signal Reference
+
+For runtime control:
+
+| Signal | Effect |
+|--------|--------|
+| `SIGHUP` | Reload configuration from disk |
+| `SIGUSR1` | Dump config and state summary to logs |
+| `SIGUSR2` | Save state to database immediately |
+| `SIGTERM`/`SIGINT` | Graceful shutdown (saves if configured) |
+
+Examples:
+
+```bash
+# Reload config
+pkill -HUP preload-rs
+
+# Dump state
+pkill -USR1 preload-rs && journalctl -u preload-rs -n 50
+
+# Save state
+pkill -USR2 preload-rs
+
+# Graceful shutdown
+pkill -TERM preload-rs
+```

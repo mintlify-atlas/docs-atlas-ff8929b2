@@ -1,0 +1,165 @@
+---
+title: Introduction
+description: Intelligent application prefetching for faster Linux system performance
+---
+
+<div className="relative overflow-hidden bg-gradient-to-br from-[#CE412B] to-[#A72511] dark:from-[#CE412B] dark:to-[#A72511] py-20">
+  <div className="max-w-5xl mx-auto px-6">
+    <div className="grid lg:grid-cols-12 gap-8 items-center">
+      <div className="lg:col-span-7">
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-4">
+          Welcome to preload-rs Documentation
+        </h1>
+        <p className="text-lg sm:text-xl text-white/90 max-w-2xl mb-8">
+          Speed up your Linux system with adaptive prefetching. preload-rs learns your usage patterns and intelligently preloads applications before you need them.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-white text-[#CE412B] font-semibold hover:bg-gray-100 transition-colors no-underline"
+          >
+            Get Started
+          </a>
+          <a 
+            href="/architecture/overview" 
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-white/30 bg-white/10 text-white font-semibold hover:bg-white/20 transition-colors no-underline"
+          >
+            Learn How It Works
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-3">
+    What is preload-rs?
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    preload-rs is an adaptive daemon that monitors which programs you run and prefetches their binaries and shared libraries into RAM before you launch them. Using a Markov-based probabilistic model, it learns correlations between applications and predicts what you'll need next.
+  </p>
+
+  <CardGroup cols={2}>
+    <Card title="Smart Prefetching" icon="brain" href="/guides/understanding-preload">
+      Uses Markov chains to predict which applications you'll launch next based on your usage patterns
+    </Card>
+    <Card title="Memory Aware" icon="memory" href="/guides/tuning-performance">
+      Dynamically adjusts prefetch budgets based on available system memory to avoid performance degradation
+    </Card>
+    <Card title="Process Monitoring" icon="chart-line" href="/architecture/overview">
+      Continuously scans running processes and tracks mapped files to build accurate usage models
+    </Card>
+    <Card title="Persistent State" icon="database" href="/architecture/persistence">
+      Saves learned patterns to SQLite so predictions improve over time across system reboots
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-3">
+    Quick Start
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Get preload-rs running on your Linux system in three simple steps
+  </p>
+
+  <Steps>
+    <Step title="Install preload-rs">
+      Clone the repository and build with Cargo:
+      
+      ```bash
+      git clone https://github.com/arunanshub/preload-rs.git
+      cd preload-rs
+      cargo build --release
+      ```
+    </Step>
+    
+    <Step title="Create a configuration file">
+      Copy the example configuration and customize it for your system:
+      
+      ```bash
+      cp docs/config.example.toml config.toml
+      ```
+      
+      <Accordion title="View example configuration">
+        ```toml config.toml
+        [model]
+        cycle = 20
+        use_correlation = true
+        minsize = 2000000
+        active_window = 21600
+        decay = 0.01
+        
+        [model.memory]
+        memfree = 50
+        memcached = 0
+        
+        [system]
+        doscan = true
+        dopredict = true
+        sortstrategy = "block"
+        ```
+      </Accordion>
+    </Step>
+    
+    <Step title="Run the daemon">
+      Start preload-rs with your configuration:
+      
+      ```bash
+      ./target/release/cli --config config.toml -v
+      ```
+      
+      <Info>
+        The daemon will begin monitoring your system immediately. Run with `-v`, `-vv`, or `-vvv` for increasing verbosity levels.
+      </Info>
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <h2 className="text-2xl sm:text-3xl font-semibold text-gray-900 dark:text-white mb-3">
+    Key Features
+  </h2>
+  <p className="text-base text-gray-600 dark:text-gray-400 mb-8">
+    Explore what makes preload-rs powerful
+  </p>
+
+  <CardGroup cols={3}>
+    <Card title="CLI Reference" icon="terminal" href="/usage/cli-reference">
+      Complete command-line options and flags
+    </Card>
+    <Card title="Configuration" icon="gear" href="/usage/configuration">
+      Detailed configuration reference
+    </Card>
+    <Card title="Signal Control" icon="signal" href="/usage/signals">
+      Runtime control via signals
+    </Card>
+    <Card title="Markov Model" icon="diagram-project" href="/architecture/markov-model">
+      Learn how prediction works
+    </Card>
+    <Card title="API Traits" icon="code" href="/api/traits">
+      Extend preload-rs behavior
+    </Card>
+    <Card title="Troubleshooting" icon="wrench" href="/guides/troubleshooting">
+      Common issues and solutions
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="rounded-2xl border dark:border-[#27272a] border-gray-200 bg-gray-50 dark:bg-[#1a1d27] p-8">
+    <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-3">
+      Ready to optimize your system?
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400 mb-6">
+      Follow our quickstart guide to get preload-rs running in minutes and start experiencing faster application launches.
+    </p>
+    <a 
+      href="/quickstart" 
+      className="inline-flex items-center px-6 py-3 rounded-lg bg-[#CE412B] text-white font-semibold hover:bg-[#A72511] transition-colors no-underline"
+    >
+      Get Started Now
+    </a>
+  </div>
+</div>

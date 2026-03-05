@@ -1,0 +1,459 @@
+---
+title: Tuning Performance
+description: Optimize preload-rs settings for your system and workload
+---
+
+## Overview
+
+preload-rs provides many configuration knobs to balance responsiveness, memory usage, and I/O load. This guide helps you tune these settings for optimal performance.
+
+## Cycle Time
+
+The `cycle` setting controls how often preload-rs scans processes and updates predictions.
+
+```toml
+[model]
+cycle = 20  # seconds
+```
+
+### Impact
+
+- **Shorter cycles** (5-10s):
+  - Faster reaction to new processes
+  - Higher CPU usage from frequent scanning
+  - More frequent prefetch updates
+  - Better for rapidly changing workloads
+
+- **Longer cycles** (30-60s):
+  - Lower CPU overhead
+  - Slower to adapt to new processes
+  - Better for stable, predictable workloads
+  - Reduces log volume
+
+### Recommendations
+
+- **Development workload**: 15-20 seconds (frequent context switching)
+- **Office workload**: 20-30 seconds (balanced)
+- **Server workload**: 30-60 seconds (stable process set)
+- **Battery-powered**: 30-60 seconds (reduce CPU wake-ups)
+
+<Tip>
+Monitor CPU usage with `-vv` logging. If preload-rs consistently uses >5% CPU, increase the cycle time.
+</Tip>
+
+## Memory Policy
+
+The memory budget determines how aggressively preload-rs prefetches files.
+
+```toml
+[model.memory]
+memtotal = -10   # % of total memory
+memfree = 50     # % of free memory
+memcached = 0    # % of cached memory
+```
+
+### Budget Formula
+
+```
+budget = (memtotal% * total_ram) + (memfree% * free_ram) + (memcached% * cached_ram)
+```
+
+All percentages are clamped to `-100..=100`.
+
+### Conservative (Low Memory Systems)
+
+For systems with 4-8 GB RAM or aggressive application memory usage:
+
+```toml
+[model.memory]
+memtotal = -20   # Reserve 20% of total memory
+memfree = 30     # Use only 30% of free memory
+memcached = 0    # Don't consider cache
+```
+
+This ensures preload never causes memory pressure.
+
+### Balanced (Default)
+
+For typical desktop systems with 8-16 GB RAM:
+
+```toml
+[model.memory]
+memtotal = -10   # Reserve 10% of total memory
+memfree = 50     # Use half of free memory
+memcached = 0    # Default
+```
+
+### Aggressive (High Memory Systems)
+
+For systems with 32+ GB RAM and fast SSDs:
+
+```toml
+[model.memory]
+memtotal = 0     # No blanket reserve
+memfree = 70     # Use 70% of free memory
+memcached = 20   # Also use some cached memory
+```
+
+<Warning>
+Aggressive policies can cause swapping if free memory drops suddenly. Monitor with `free -h` or `htop`.
+</Warning>
+
+### Negative Values
+
+Negative `memtotal` acts as a safety reserve:
+
+```toml
+memtotal = -15  # Always leave 15% of total RAM unused
+```
+
+This is especially important for systems without swap or with slow swap devices.
+
+## Prefetch Concurrency
+
+Controls how many files are prefetched in parallel.
+
+```toml
+[system]
+prefetch_concurrency = 8  # or omit for auto
+```
+
+### Options
+
+- **Omit field**: Auto-detect based on CPU core count (recommended)
+- **Positive number**: Use exactly that many workers
+- **0**: Disable prefetching entirely (observe/predict only)
+
+### For HDDs
+
+HDDs perform poorly with concurrent random I/O:
+
+```toml
+prefetch_concurrency = 1  # Sequential only
+sortstrategy = "block"     # Critical for HDDs
+```
+
+This forces sequential prefetch, minimizing seek times.
+
+### For SSDs
+
+Modern SSDs benefit from parallelism:
+
+```toml
+prefetch_concurrency = 8   # Or omit for auto
+sortstrategy = "block"     # Still helps with read-ahead
+```
+
+### For NVMe SSDs
+
+High-performance NVMe drives:
+
+```toml
+# Omit prefetch_concurrency for auto (CPU cores)
+sortstrategy = "none"  # Optional: reduce overhead
+```
+
+<Tip>
+Start with auto-detection and adjust if you notice I/O congestion affecting other applications.
+</Tip>
+
+## Sort Strategy
+
+Determines the order in which files are prefetched.
+
+```toml
+[system]
+sortstrategy = "block"  # none | path | block | inode
+```
+
+### Strategies
+
+#### `block` (Default, Recommended)
+
+Sorts by block device, then physical block number, then offset.
+
+- **Best for**: HDDs (critical!)
+- **Effect**: Minimizes seek time by grouping nearby blocks
+- **Overhead**: Requires `stat()` call per file
+
+Implementation sorts by:
+1. Device ID
+2. Block number (offset / block_size)
+3. Offset within block
+
+See `planner.rs:123-152` for details.
+
+#### `inode`
+
+Sorts by block device, then inode number, then offset.
+
+- **Best for**: Filesystems with inode-based layout (ext4, XFS)
+- **Effect**: Exploits filesystem locality
+- **Overhead**: Requires `stat()` call per file
+
+#### `path`
+
+Sorts alphabetically by file path.
+
+- **Best for**: Filesystems where path correlates with layout
+- **Effect**: Groups files in same directory
+- **Overhead**: Minimal (no stat needed)
+
+#### `none`
+
+No sorting, processes files by prediction score only.
+
+- **Best for**: NVMe SSDs with negligible seek cost
+- **Effect**: Prefetches highest-priority files first
+- **Overhead**: None
+
+### Recommendations
+
+| Storage Type | Strategy | Concurrency |
+|--------------|----------|-------------|
+| HDD | `block` | 1-2 |
+| SATA SSD | `block` | 4-8 |
+| NVMe SSD | `block` or `none` | 8+ |
+| Network storage | `none` | 4-8 |
+
+## Minimum Size Filter
+
+The `minsize` setting filters out small executables.
+
+```toml
+[model]
+minsize = 2000000  # bytes (2 MB)
+```
+
+### Impact
+
+- **Higher values** (5-10 MB):
+  - Fewer executables tracked
+  - Lower memory overhead
+  - Faster predictions
+  - May miss important small utilities
+
+- **Lower values** (500 KB - 1 MB):
+  - More executables tracked
+  - Higher memory overhead
+  - Slower predictions
+  - Better coverage of small tools
+
+### Recommendations
+
+- **Default**: 2,000,000 bytes (2 MB) - good balance
+- **Desktop with large apps**: 5,000,000 bytes (5 MB) - focus on major applications
+- **Development environment**: 1,000,000 bytes (1 MB) - include small tools
+- **Server environment**: 10,000,000 bytes (10 MB) - focus on major services
+
+<Note>
+Use `-vv` logging to see which executables are being admitted. If important applications are excluded, lower `minsize`.
+</Note>
+
+## Active Window
+
+Controls how long to keep executables in the model.
+
+```toml
+[model]
+active_window = 21600  # seconds (6 hours)
+```
+
+### Impact
+
+- **Shorter windows** (1-2 hours):
+  - Smaller model size
+  - Faster predictions
+  - Quicker to drop old patterns
+  - Better for focused, session-based work
+
+- **Longer windows** (12-24 hours):
+  - Larger model size
+  - Remembers applications used earlier in the day
+  - Better for varied workloads
+  - Captures daily patterns
+
+### Recommendations
+
+- **Focused sessions**: 7,200 seconds (2 hours)
+- **Typical workday**: 21,600 seconds (6 hours, default)
+- **24/7 server**: 86,400 seconds (24 hours)
+- **Long-running workstation**: 43,200 seconds (12 hours)
+
+## Prefix Filters
+
+Control which executables and maps are tracked.
+
+### Executable Prefixes
+
+```toml
+[system]
+exeprefix = [
+  "!/usr/sbin/",         # Deny system daemons
+  "!/usr/local/sbin/",   # Deny local daemons
+  "/usr/",               # Allow user programs
+  "!/"                   # Deny everything else
+]
+```
+
+### Map Prefixes
+
+```toml
+[system]
+mapprefix = [
+  "/usr/",               # Allow system libraries
+  "/lib/",               # Allow libraries
+  "/var/cache/",         # Allow cached files
+  "!/"                   # Deny everything else
+]
+```
+
+### Matching Rules
+
+1. Rules are evaluated in order
+2. First matching prefix wins
+3. `!` prefix means deny
+4. Longest match wins if multiple rules match
+
+### Custom Rules
+
+To track applications in `/opt`:
+
+```toml
+exeprefix = [
+  "!/usr/sbin/",
+  "!/usr/local/sbin/",
+  "/usr/",
+  "/opt/",               # Add this
+  "!/"
+]
+```
+
+To exclude a specific directory:
+
+```toml
+mapprefix = [
+  "!/usr/share/locale/", # Exclude translation files
+  "/usr/",
+  "/lib/",
+  "/var/cache/",
+  "!/"
+]
+```
+
+## Policy Cache
+
+Caches admission decisions to avoid repeated filter checks.
+
+```toml
+[system]
+policy_cache_ttl = 300        # seconds
+policy_cache_capacity = 1024   # entries
+```
+
+### Recommendations
+
+- **Default** (300s TTL, 1024 capacity): Good for most systems
+- **Disabled** (0 TTL or 0 capacity): Minimal overhead, always fresh decisions
+- **Aggressive** (600s TTL, 2048 capacity): Reduces overhead on systems with many processes
+
+<Tip>
+The cache stores rejection decisions, so increasing capacity helps systems with many filtered-out processes.
+</Tip>
+
+## Example Configurations
+
+### HDD-Optimized Desktop
+
+```toml
+[model]
+cycle = 30
+minsize = 5000000
+active_window = 21600
+
+[model.memory]
+memtotal = -20
+memfree = 40
+memcached = 0
+
+[system]
+sortstrategy = "block"
+prefetch_concurrency = 1  # Sequential for HDD
+```
+
+### High-End Development Machine
+
+```toml
+[model]
+cycle = 15
+minsize = 1000000
+active_window = 28800
+
+[model.memory]
+memtotal = -5
+memfree = 60
+memcached = 10
+
+[system]
+sortstrategy = "block"
+# Omit prefetch_concurrency for auto
+```
+
+### Low-Memory Laptop
+
+```toml
+[model]
+cycle = 30
+minsize = 3000000
+active_window = 14400
+
+[model.memory]
+memtotal = -25
+memfree = 25
+memcached = 0
+
+[system]
+sortstrategy = "block"
+prefetch_concurrency = 2
+```
+
+### Observe-Only Mode
+
+Learn patterns without prefetching:
+
+```toml
+[model]
+cycle = 20
+
+[system]
+prefetch_concurrency = 0  # Disable prefetch
+```
+
+Or use the CLI flag:
+
+```bash
+preload-rs --no-prefetch
+```
+
+## Monitoring and Iteration
+
+1. **Start with defaults** and monitor for a few days
+2. **Enable verbose logging**: `preload-rs -vv`
+3. **Watch for**:
+   - Memory pressure (check `free -h`, look for swap usage)
+   - I/O contention (check `iostat`, high `%util` on disk)
+   - CPU usage (check `top`, preload-rs should be less than 5%)
+4. **Adjust settings** based on observations
+5. **Send SIGHUP** to reload config without restarting
+
+```bash
+# Reload configuration
+pkill -HUP preload-rs
+
+# Dump current state
+pkill -USR1 preload-rs
+```
+
+<Note>
+Use `--once` flag to test configuration changes in a single cycle before committing them.
+</Note>
